@@ -24,6 +24,7 @@ var _arm_r: Node3D
 var _rig: Node3D
 var _model: Node3D
 var _anim: AnimationPlayer
+var _moving := false
 
 
 static func _mat(c: Color) -> StandardMaterial3D:
@@ -132,7 +133,15 @@ func use_model(scene: PackedScene, height := 1.6) -> void:
 		_model.scale = Vector3.ONE * (height / aabb.size.y)
 	_model.rotation_degrees.y = 180   # face up the lane
 	_anim = _model.find_child("AnimationPlayer", true, false) as AnimationPlayer
-	_play(["run_f", "run", "jog"])
+	_play(["idle_f_loop", "idle"])
+
+
+## Run while the squad slides, idle while it holds still.
+func set_moving(on: bool) -> void:
+	if _anim == null or on == _moving:
+		return
+	_moving = on
+	_play(["run_f_loop", "run"] if on else ["idle_f_loop", "idle"])
 
 
 func _play(names: Array) -> void:
@@ -149,7 +158,8 @@ func _aabb(n: Node) -> AABB:
 	var out := AABB()
 	var first := true
 	for mi in n.find_children("*", "MeshInstance3D", true, false):
-		var b: AABB = (mi as MeshInstance3D).get_aabb()
+		var m := mi as MeshInstance3D
+		var b: AABB = (n.global_transform.affine_inverse() * m.global_transform) * m.get_aabb()
 		if first:
 			out = b
 			first = false
@@ -160,17 +170,11 @@ func _aabb(n: Node) -> AABB:
 
 func kick() -> void:
 	_kick_t = 0.22
-	if _anim != null:
-		_play(["kick", "shoot", "kick_f"])
 
 
 func _process(delta: float) -> void:
 	_t += delta
 	if _rig == null or not _rig.visible:
-		if _kick_t > 0.0:
-			_kick_t -= delta
-			if _kick_t <= 0.0:
-				_play(["run_f", "run", "jog"])
 		return
 	var w := sin(_t * 13.0)
 	_leg_l.rotation.x = w * 0.7
