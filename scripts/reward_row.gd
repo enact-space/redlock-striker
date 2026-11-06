@@ -1,13 +1,13 @@
 class_name RewardRow
 extends Node3D
-## A straight row of reward tiles along one edge of the bridge, behind a stone gate on the lane
-## edge. Kick balls up the row's lane: the gate's number counts down, at zero the first tile bursts,
-## its reward flies to the squad and the whole row slides one tile forward.
+## A straight row of reward tiles along one edge of the bridge. Kick balls up the row's lane: the
+## number over the front tile counts down, at zero that tile bursts, its reward flies to the squad
+## and the whole row slides one tile forward.
 ## The recruits row hands out clones (+1 ... +99); the kit row hands out boot upgrades.
 
 signal claimed(item: Dictionary)
 
-const RECRUITS := [1, 1, 2, 2, 3, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 99]
+const RECRUITS := [2, 3, 5, 5, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 75, 99]
 const KIT := ["boots", "boots", "boots", "boots", "boots", "rate", "rate", "rate"]
 const SLOTS := 20
 const STEP := 1.1
@@ -15,11 +15,10 @@ const WIDTH := 1.1
 
 var kind := "recruits"
 var side := 1.0
-var front := Vector3.ZERO   # centre of the gate, on the deck
+var front := Vector3.ZERO   # centre of the front tile, on the deck
 var made := 0
 var items: Array[Dictionary] = []
 var _num: Label3D
-var _gate: MeshInstance3D
 var _font: Font
 var _shake := 0.0
 
@@ -36,9 +35,9 @@ func setup(k: String, s: float, at: Vector3, font: Font) -> void:
 	_refresh()
 
 
-## Tile i sits i steps up the row behind the gate.
+## Tile i sits i steps up the row from the front.
 func _slot(i: int) -> Vector3:
-	return front + Vector3(0, 0.12, -1.0 - i * STEP)
+	return front + Vector3(0, 0.06, -i * STEP)
 
 
 func _std(c: Color) -> StandardMaterial3D:
@@ -49,39 +48,28 @@ func _std(c: Color) -> StandardMaterial3D:
 
 
 func _build() -> void:
-	var stone := _std(Color(0.8, 0.78, 0.73))
-	var dark := _std(Color(0.62, 0.6, 0.56))
-	var length := SLOTS * STEP + 1.4
-	# the raised stone bed the tiles slide along
+	var length := SLOTS * STEP + 0.6
+	# a slim dark track under the tiles with a cyan light line, like the Project R arena border
 	var bed := MeshInstance3D.new()
-	bed.mesh = Meshes.box(WIDTH + 0.2, 0.12, length)
-	bed.position = front + Vector3(0, 0.06, -0.4 - length * 0.5)
-	bed.material_override = dark
+	bed.mesh = Meshes.box(WIDTH + 0.14, 0.06, length)
+	bed.position = front + Vector3(0, 0.03, STEP * 0.5 - length * 0.5)
+	bed.material_override = _std(Color(0.2, 0.24, 0.31))
 	add_child(bed)
-	# a low kerb between the row and the keepers' lane
-	var kerb := MeshInstance3D.new()
-	kerb.mesh = Meshes.box(0.16, 0.36, length)
-	kerb.position = front + Vector3(-side * (WIDTH * 0.5 + 0.18), 0.18, -0.4 - length * 0.5)
-	kerb.material_override = stone
-	add_child(kerb)
-	# the gate on the lane edge, its number facing the squad
-	_gate = MeshInstance3D.new()
-	_gate.mesh = Meshes.box(WIDTH + 0.3, 0.95, 0.6)
-	_gate.position = front + Vector3(0, 0.47, 0)
-	_gate.material_override = _std(Color(0.55, 0.42, 0.32))
-	add_child(_gate)
-	for dx in [-1.0, 1.0]:
-		var post := MeshInstance3D.new()
-		post.mesh = Meshes.box(0.22, 1.25, 0.7)
-		post.position = front + Vector3(dx * (WIDTH * 0.5 + 0.22), 0.62, 0)
-		post.material_override = stone
-		add_child(post)
+	var led := MeshInstance3D.new()
+	led.mesh = Meshes.box(0.05, 0.03, length)
+	led.position = front + Vector3(-side * (WIDTH * 0.5 + 0.04), 0.07, STEP * 0.5 - length * 0.5)
+	var lm := StandardMaterial3D.new()
+	lm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	lm.albedo_color = Color(0.45, 0.95, 1.0)
+	led.material_override = lm
+	add_child(led)
 	_num = Label3D.new()
 	_num.font = _font
 	_num.font_size = 110
-	_num.outline_size = 22
-	_num.pixel_size = 0.009
-	_num.position = front + Vector3(0, 1.0, 0.35)
+	_num.outline_size = 24
+	_num.pixel_size = 0.008
+	_num.modulate = Color(1.0, 0.95, 0.6)
+	_num.position = front + Vector3(0, 0.9, 0.5)
 	_num.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_num.no_depth_test = true
 	_num.render_priority = 2
@@ -93,10 +81,10 @@ func _next_reward() -> Dictionary:
 	made += 1
 	if kind == "recruits":
 		var v: int = RECRUITS[mini(k, RECRUITS.size() - 1)]
-		var hits := int(round(8.0 * pow(1.6, k)))
+		var hits := int(round(4.0 * pow(1.38, k)))
 		return {"reward": "recruits", "value": v, "hits": hits, "text": "+%d" % v}
 	var r: String = KIT[mini(k, KIT.size() - 1)]
-	var hits := int(round(30.0 * pow(4.0, k)))
+	var hits := int(round(12.0 * pow(2.6, k)))
 	if r == "boots":
 		return {"reward": "boots", "value": 1, "hits": hits, "text": "BOOTS"}
 	return {"reward": "rate", "value": 1, "hits": hits, "text": "RAPID"}
@@ -135,6 +123,10 @@ func _push_item() -> void:
 func _layout(animate: bool) -> void:
 	for i in items.size():
 		var n: Node3D = items[i].node
+		# the front tile shows its countdown instead; far tiles stay quiet so the row reads cleanly
+		for c in n.get_children():
+			if c is Label3D:
+				c.visible = i > 0 and i < 12
 		var goal := _slot(i)
 		if animate:
 			var tw := create_tween()
@@ -149,7 +141,7 @@ func _refresh() -> void:
 
 ## World position of the gate, where the balls land.
 func target() -> Vector3:
-	return global_position + front + Vector3(0, 0.45, 0)
+	return global_position + front + Vector3(0, 0.3, 0)
 
 
 ## A ball hit the gate. Returns the reward when the first tile bursts, else an empty dictionary.
@@ -173,8 +165,11 @@ func hit(dmg: int) -> Dictionary:
 
 
 func _process(delta: float) -> void:
+	if items.is_empty():
+		return
+	var n: Node3D = items[0].node
 	if _shake > 0.0:
 		_shake -= delta
-		_gate.scale = Vector3(1.06, 1.06, 1.06)
+		n.scale = Vector3(1.1, 1.4, 1.1)
 	else:
-		_gate.scale = Vector3.ONE
+		n.scale = Vector3.ONE

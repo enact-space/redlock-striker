@@ -26,6 +26,8 @@ var _model: Node3D
 var _anim: AnimationPlayer
 var _moving := false
 var _kicking := false
+var _move_hold := 0.0
+var _rest := 0.0
 
 
 static func _mat(c: Color) -> StandardMaterial3D:
@@ -153,9 +155,14 @@ func set_kicking(on: bool) -> void:
 	_resume()
 
 
-## Run while the squad slides, kick (or idle) while it holds still.
+## Run while the squad slides, kick (or idle) while it holds still. Holds each state for a
+## moment so small drags don't flick between run and kick.
 func set_moving(on: bool) -> void:
+	if on:
+		_move_hold = 0.25
 	if _anim == null or on == _moving:
+		return
+	if not on and _move_hold > 0.0:
 		return
 	_moving = on
 	_resume()
@@ -167,8 +174,8 @@ func _resume() -> void:
 	if _moving:
 		_play(["run_f_loop", "run_f", "run"])
 	elif _kicking and _anim.has_animation("fb/kick"):
-		_anim.play("fb/kick", 0.12, 1.25)
-		_anim.seek(0.12, false)
+		_anim.play("fb/kick", 0.2, 1.15)
+		_anim.seek(0.15, false)
 	else:
 		_play(["idle_f_loop", "idle_f", "idle"])
 
@@ -208,9 +215,18 @@ func kick() -> void:
 
 func _process(delta: float) -> void:
 	_t += delta
-	# loop just the last stride, the strike and the follow-through
-	if _kicking and not _moving and _anim and _anim.current_animation == "fb/kick" and _anim.current_animation_position > 0.74:
+	_move_hold -= delta
+	if _moving and _move_hold <= 0.0:
+		_moving = false
 		_resume()
+	# kick, settle into the stance for a beat, kick again
+	if _kicking and not _moving and _anim and _anim.current_animation == "fb/kick" and _anim.current_animation_position > 0.85:
+		_play(["idle_f_loop", "idle_f", "idle"])
+		_rest = 0.2
+	if _rest > 0.0:
+		_rest -= delta
+		if _rest <= 0.0 and not _moving:
+			_resume()
 	if _rig == null or not _rig.visible:
 		return
 	var w := sin(_t * 13.0)

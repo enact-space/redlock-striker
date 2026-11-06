@@ -42,17 +42,31 @@ func _run() -> void:
 	else:
 		ap.add_animation_library("fb", load("res://assets/characters/football_clips.res"))
 		anim_name = "fb/" + clip
-	var fix := Transform3D()
-	for ti in times.size():
-		if anim_name != "":
-			ap.play(anim_name)
-			ap.seek(times[ti], true)
-			ap.pause()
+	var sk := root.find_children("*", "Skeleton3D", true, false)[0] as Skeleton3D
+	var scale := 0.0
+	var idle_yaw := 0.0
+	# frame 0 is always the idle pose: it sets the size and the facing every other frame is turned to
+	var poses := [["idle", 0.4]]
+	for t in times:
+		poses.append([anim_name, t])
+	for ti in poses.size():
+		var nm: String = poses[ti][0]
+		if nm == "idle":
+			for n in ap.get_animation_list():
+				if n.ends_with("idle_f_loop") or n == "idle_f":
+					nm = n
+					break
+		ap.play(nm)
+		ap.seek(poses[ti][1], true)
+		ap.pause()
 		await process_frame
 		await process_frame
 		var got := _pose(root)
+		var hips := _hips(root, sk)
 		if ti == 0:
-			fix = _normaliser(got[0])
+			scale = 1.0 / _height(got[0])
+			idle_yaw = hips[1]
+		var fix := _normaliser(got[0], scale, hips[0], idle_yaw - hips[1])
 		var path := "res://assets/characters/%s_clone.res" % who
 		if clip != "":
 			path = "res://assets/characters/%s_%s_%d.res" % [who, clip, ti]
@@ -119,15 +133,36 @@ func _pose(root: Node3D) -> Array:
 
 
 ## 1 m tall, feet on 0, centred, facing -Z (the models face +Z).
-func _normaliser(parts: Array) -> Transform3D:
-	var lo := Vector3(INF, INF, INF)
-	var hi := -lo
+func _height(parts: Array) -> float:
+	var lo := INF
+	var hi := -INF
 	for p in parts:
 		for x in p[0][Mesh.ARRAY_VERTEX]:
-			lo = lo.min(x)
-			hi = hi.max(x)
-	var s := 1.0 / (hi.y - lo.y)
-	return Transform3D(Basis(Vector3.UP, PI).scaled(Vector3.ONE * s), Vector3.ZERO) * Transform3D(Basis(), -Vector3((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5))
+			lo = minf(lo, x.y)
+			hi = maxf(hi, x.y)
+	return hi - lo
+
+
+## Pelvis position and the hips' facing angle (from the thighs), in root space.
+func _hips(root: Node3D, sk: Skeleton3D) -> Array:
+	var to_root := root.global_transform.affine_inverse() * sk.global_transform
+	var pel := to_root * sk.get_bone_global_pose(sk.find_bone("pelvis")).origin
+	var l := to_root * sk.get_bone_global_pose(sk.find_bone("thigh.L")).origin
+	var r := to_root * sk.get_bone_global_pose(sk.find_bone("thigh.R")).origin
+	var right := r - l
+	return [pel, atan2(right.z, right.x)]
+
+
+## Same scale for every frame; each frame turned so its hips face the same way as the idle pose,
+## centred on its pelvis and dropped so its lowest point touches the ground (no floating).
+## Faces -Z (the models face +Z).
+func _normaliser(parts: Array, s: float, pelvis: Vector3, yaw: float) -> Transform3D:
+	var turn := Transform3D(Basis(Vector3.UP, -yaw), Vector3.ZERO) * Transform3D(Basis(), -Vector3(pelvis.x, 0, pelvis.z))
+	var lo := INF
+	for p in parts:
+		for x in p[0][Mesh.ARRAY_VERTEX]:
+			lo = minf(lo, (turn * x).y)
+	return Transform3D(Basis(Vector3.UP, PI).scaled(Vector3.ONE * s), Vector3.ZERO) * Transform3D(Basis(), Vector3(0, -lo, 0)) * turn
 
 
 func _build(parts: Array, total: int, fix: Transform3D, path: String) -> void:

@@ -18,8 +18,9 @@ const ROW_X := 2.65          # centre of each reward row
 const LANE := 1.75           # keepers walk the middle lane, |x| < LANE, until they pass the gates
 const CLONE_H := 1.1        # clone height in metres
 const LEADER_H := 1.3
-const POSES := 6             # kick flipbook frames
-const POSE_FPS := 9.0
+const POSES := 8             # clone frames: 0 = standing, 1..7 = the kick
+const POSE_FPS := 16.0
+const KICK_EVERY := 0.9      # each clone kicks once per this many seconds
 const BALL_SPEED := 26.0
 const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
@@ -34,8 +35,8 @@ const BOOTS := [
 	{"name": "Spirit boots", "dmg": 12, "rate": 1.4, "suit": Color(1.0, 0.8, 0.88), "trim": Color(1.0, 0.45, 0.65), "ball": Color(1.0, 0.6, 0.8)},
 	{"name": "Redlock elite", "dmg": 20, "rate": 1.5, "suit": Color(0.95, 0.25, 0.3), "trim": Color(1.0, 0.85, 0.4), "ball": Color(1.0, 0.5, 0.4)},
 ]
-const KEEPER_TINT := Color(0.42, 0.9, 1.0)
-const BRUTE_TINT := Color(1.0, 0.45, 0.3)
+const KEEPER_TINT := Color(1.0, 0.16, 0.38)    # hot red-pink holograms: pop against the green turf
+const BRUTE_TINT := Color(1.0, 0.55, 0.05)
 
 var state := "title"
 var hero_pick := "hiyori"
@@ -120,18 +121,30 @@ func _std(c: Color) -> StandardMaterial3D:
 
 
 func _build_world() -> void:
+	# bright and clean like the Project R arena: pale sky, soft daylight, slate and cyan trim
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.05, 0.09, 0.19)
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = Color(0.5, 0.66, 0.86)
+	sky_mat.sky_horizon_color = Color(0.86, 0.9, 0.95)
+	sky_mat.ground_bottom_color = Color(0.6, 0.7, 0.85)
+	sky_mat.ground_horizon_color = Color(0.86, 0.9, 0.95)
+	sky_mat.sun_angle_max = 20.0
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.8, 0.85, 1.0)
-	env.ambient_light_energy = 0.7
+	env.ambient_light_color = Color(0.86, 0.9, 1.0)
+	env.ambient_light_energy = 0.55
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-60, -30, 0)
-	sun.light_energy = 1.0
+	sun.rotation_degrees = Vector3(-62, -25, 0)
+	sun.light_energy = 0.9
+	sun.light_color = Color(1.0, 0.97, 0.92)
+	sun.shadow_enabled = true
+	sun.directional_shadow_max_distance = 26.0
 	add_child(sun)
 
 	cam = Camera3D.new()
@@ -140,99 +153,101 @@ func _build_world() -> void:
 	cam.position = Vector3(0, 11.5, SQUAD_Z + 9.0)
 	cam.look_at(Vector3(0, 0, SQUAD_Z - 12.5))
 
-	# the bridge: paved stone at the near end, a pitch-green middle lane between the reward rows,
-	# low navy walls, floating in the night
+	# the bridge deck: Project R floor slabs, with the arena's striped turf down the middle lane
 	var deck_len := SQUAD_Z + 6.0 - (GATE_Z - 4.0)
 	var deck_mid := (SQUAD_Z + 6.0 + GATE_Z - 4.0) * 0.5
 	var deck := MeshInstance3D.new()
 	deck.mesh = Meshes.box(HALF * 2.0, 1.0, deck_len)
 	deck.position = Vector3(0, -0.5, deck_mid)
+	deck.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var sh := Shader.new()
 	sh.code = """
 shader_type spatial;
 uniform float row_z;
 uniform float lane;
+uniform sampler2D slab : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D slab_n : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform sampler2D turf_d : filter_linear_mipmap, repeat_enable;
+uniform sampler2D turf_n : hint_normal, filter_linear_mipmap, repeat_enable;
 varying vec3 wp;
 void vertex() { wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
 void fragment() {
-	vec2 tile = floor(wp.xz / vec2(1.1, 1.1));
-	float chk = mod(tile.x + tile.y, 2.0);
-	vec2 f = fract(wp.xz / 1.1);
-	float grout = step(0.95, max(f.x, f.y));
-	vec3 pave = mix(vec3(0.78, 0.75, 0.69), vec3(0.73, 0.7, 0.64), chk);
-	pave = mix(pave, vec3(0.55, 0.52, 0.48), grout);
-	float stripe = step(0.5, fract(wp.z / 3.0));
-	vec3 grass = mix(vec3(0.17, 0.44, 0.26), vec3(0.2, 0.5, 0.3), stripe);
-	float in_lane = step(wp.z, row_z) * step(abs(wp.x), lane + 0.2);
-	vec3 c = mix(pave, grass, in_lane);
+	// light grey floor panels with thin dark seams every 2 m
+	vec2 pf = fract(wp.xz / 2.0);
+	float seam = 1.0 - step(0.012, pf.x) * step(0.012, pf.y);
+	vec3 floor_c = texture(slab, wp.xz / 4.0).rgb * vec3(0.8, 0.82, 0.88);
+	floor_c = mix(floor_c, pow(vec3(0.42, 0.45, 0.52), vec3(2.2)), seam * 0.8);
+	// turf: the arena's mowing stripes (2.5 m bands) plus fine grain
+	float stripe = step(0.5, fract(wp.z / 5.0));
+	vec3 turf_c = pow(mix(vec3(0.17, 0.42, 0.08), vec3(0.23, 0.5, 0.1), stripe), vec3(2.2));
+	turf_c *= 0.82 + 0.36 * texture(turf_d, wp.xz / 3.0).r;
+	float in_lane = step(wp.z, row_z) * step(abs(wp.x), lane + 0.25);
+	// white touchlines down both sides of the lane and across its mouth
+	float line = in_lane * (step(lane + 0.13, abs(wp.x)) + step(row_z - 0.12, wp.z));
+	vec3 c = mix(floor_c, turf_c, in_lane);
+	c = mix(c, vec3(0.85), clamp(line, 0.0, 1.0));
 	float top = step(-0.01, wp.y);
-	ALBEDO = mix(vec3(0.86, 0.84, 0.79), c, top);
-	ROUGHNESS = 0.9;
+	ALBEDO = mix(pow(vec3(0.3, 0.34, 0.42), vec3(2.2)), c, top);
+	NORMAL_MAP = mix(texture(slab_n, wp.xz / 4.0).rgb, texture(turf_n, wp.xz / 2.0).rgb, in_lane);
+	NORMAL_MAP_DEPTH = 0.6;
+	ROUGHNESS = mix(0.55, 0.95, in_lane);
 }
 """
 	var dm := ShaderMaterial.new()
 	dm.shader = sh
-	dm.set_shader_parameter("row_z", ROW_Z - 0.4)
+	dm.set_shader_parameter("row_z", ROW_Z + 0.6)
 	dm.set_shader_parameter("lane", LANE)
+	dm.set_shader_parameter("slab", load("res://assets/textures/slab_albedo.jpg"))
+	dm.set_shader_parameter("slab_n", load("res://assets/textures/slab_normal.png"))
+	dm.set_shader_parameter("turf_d", load("res://assets/textures/turf_detail.png"))
+	dm.set_shader_parameter("turf_n", load("res://assets/textures/turf_normal.png"))
 	deck.material_override = dm
 	add_child(deck)
+	# low slate border along both edges with the arena's cyan light strip (no tall walls)
+	var slate := _std(Color(0.27, 0.31, 0.39))
+	slate.roughness = 0.5
+	var cyan := StandardMaterial3D.new()
+	cyan.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	cyan.albedo_color = Color(0.45, 0.95, 1.0)
 	for side in [-1.0, 1.0]:
-		var wall := MeshInstance3D.new()
-		wall.mesh = Meshes.box(0.3, 0.6, deck_len)
-		wall.position = Vector3(side * (HALF + 0.15), 0.3, deck_mid)
-		wall.material_override = _std(Color(0.13, 0.19, 0.36))
-		add_child(wall)
+		var rim := MeshInstance3D.new()
+		rim.mesh = Meshes.box(0.26, 0.18, deck_len)
+		rim.position = Vector3(side * (HALF + 0.13), 0.09, deck_mid)
+		rim.material_override = slate
+		add_child(rim)
 		var strip := MeshInstance3D.new()
-		strip.mesh = Meshes.box(0.32, 0.05, deck_len)
-		strip.position = Vector3(side * (HALF + 0.15), 0.62, deck_mid)
-		var m := _std(Color(0.55, 0.95, 0.85))
-		m.emission_enabled = true
-		m.emission = Color(0.55, 0.95, 0.85)
-		m.emission_energy_multiplier = 0.4
-		strip.material_override = m
+		strip.mesh = Meshes.box(0.03, 0.04, deck_len)
+		strip.position = Vector3(side * HALF, 0.1, deck_mid)
+		strip.material_override = cyan
 		add_child(strip)
-	# the keepers' gate at the far end: a holo projector arch
-	var arch := MeshInstance3D.new()
-	arch.mesh = Meshes.box(4.2, 0.4, 0.5)
-	arch.position = Vector3(0, 3.2, GATE_Z - 0.5)
-	var am := _std(Color(0.1, 0.15, 0.3))
-	am.emission_enabled = true
-	am.emission = KEEPER_TINT
-	am.emission_energy_multiplier = 0.6
-	arch.material_override = am
-	add_child(arch)
+	# the keepers' gate at the far end: a slate frame with a cyan holo projector bar
+	var frame := _std(Color(0.22, 0.26, 0.34))
+	var bar := MeshInstance3D.new()
+	bar.mesh = Meshes.box(4.4, 0.45, 0.5)
+	bar.position = Vector3(0, 3.0, GATE_Z - 0.6)
+	bar.material_override = frame
+	add_child(bar)
+	var glow := MeshInstance3D.new()
+	glow.mesh = Meshes.box(3.6, 0.08, 0.06)
+	glow.position = Vector3(0, 2.8, GATE_Z - 0.33)
+	glow.material_override = cyan
+	add_child(glow)
 	for side in [-1.0, 1.0]:
 		var post := MeshInstance3D.new()
-		post.mesh = Meshes.box(0.4, 3.2, 0.5)
-		post.position = Vector3(side * 1.9, 1.6, GATE_Z - 0.5)
-		post.material_override = am
+		post.mesh = Meshes.box(0.4, 3.0, 0.5)
+		post.position = Vector3(side * 2.0, 1.5, GATE_Z - 0.6)
+		post.material_override = frame
 		add_child(post)
 	var sign := Label3D.new()
 	sign.text = "REDLOCK"
 	sign.font = font
 	sign.font_size = 120
-	sign.pixel_size = 0.012
-	sign.modulate = Color(1.0, 0.4, 0.45)
-	sign.position = Vector3(0, 3.9, GATE_Z - 0.5)
+	sign.outline_size = 18
+	sign.pixel_size = 0.011
+	sign.modulate = Color(0.95, 0.25, 0.3)
+	sign.outline_modulate = Color(1, 1, 1)
+	sign.position = Vector3(0, 3.0, GATE_Z - 0.3)
 	add_child(sign)
-	# stars
-	var stars := MultiMeshInstance3D.new()
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	var q := QuadMesh.new()
-	q.size = Vector2(0.14, 0.14)
-	var qm := StandardMaterial3D.new()
-	qm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	qm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	qm.albedo_color = Color(0.7, 0.85, 1.0)
-	q.material = qm
-	mm.mesh = q
-	mm.instance_count = 220
-	for i in mm.instance_count:
-		var x := randf_range(6, 30) * (-1.0 if randf() < 0.5 else 1.0)
-		mm.set_instance_transform(i, Transform3D(Basis(), Vector3(x, randf_range(-25, 5), randf_range(-60, 15))))
-	stars.multimesh = mm
-	add_child(stars)
 
 	# reward rows: clones on the right, kit on the left (as you look up the bridge)
 	for side in [-1.0, 1.0]:
@@ -251,7 +266,7 @@ void fragment() {
 	var ksh := Shader.new()
 	ksh.code = """
 shader_type spatial;
-render_mode unshaded, blend_add, depth_draw_never, cull_back, shadows_disabled;
+render_mode unshaded, blend_mix, depth_draw_always, cull_back, shadows_disabled;
 varying vec4 tint;
 void vertex() {
 	tint = INSTANCE_CUSTOM;
@@ -262,11 +277,12 @@ void vertex() {
 void fragment() {
 	float rim = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 2.0);
 	vec3 world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float scan = 0.6 + 0.4 * step(0.45, fract(world.y * 14.0 - TIME * 1.6));
-	float k = (0.32 + rim * 1.3) * scan;
-	vec3 c = mix(tint.rgb, vec3(1.0), tint.a);
-	ALBEDO = c * k * (1.0 + tint.a * 1.5);
-	ALPHA = clamp(k, 0.0, 1.0);
+	// a solid, bright hologram: strong colour core, white-hot rim, faint scanlines
+	float scan = 0.88 + 0.12 * step(0.5, fract(world.y * 12.0 - TIME * 1.6));
+	vec3 c = mix(tint.rgb * 0.95, vec3(1.0), clamp(rim * 0.8, 0.0, 0.8)) * scan;
+	c = mix(c, vec3(1.0), tint.a);
+	ALBEDO = c;
+	ALPHA = 0.9;
 }
 """
 	var kmat := ShaderMaterial.new()
@@ -287,21 +303,28 @@ void fragment() {
 		var cmi := MultiMeshInstance3D.new()
 		cmi.multimesh = cm
 		cmi.custom_aabb = AABB(Vector3(-10, -2, -10), Vector3(20, 6, 25))
+		cmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(cmi)
 		c_mms.append(cm)
-	# a glowing disc under every clone shows the squad's boot tier
+	# a soft blob shadow under every clone keeps them on the ground
 	d_mm = MultiMesh.new()
 	d_mm.transform_format = MultiMesh.TRANSFORM_3D
 	d_mm.instance_count = MAX_CROWD + 1
 	d_mm.visible_instance_count = 0
-	var disc := CylinderMesh.new()
-	disc.top_radius = 0.17
-	disc.bottom_radius = 0.17
-	disc.height = 0.02
-	disc.radial_segments = 12
-	disc.rings = 1
+	var disc := PlaneMesh.new()
+	disc.size = Vector2(0.55, 0.55)
 	d_mat = StandardMaterial3D.new()
 	d_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	d_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	d_mat.albedo_color = Color(0.05, 0.07, 0.12, 0.45)
+	var g := GradientTexture2D.new()
+	g.fill = GradientTexture2D.FILL_RADIAL
+	g.fill_from = Vector2(0.5, 0.5)
+	g.fill_to = Vector2(1.0, 0.5)
+	var gr := Gradient.new()
+	gr.colors = PackedColorArray([Color(1, 1, 1, 1), Color(1, 1, 1, 0)])
+	g.gradient = gr
+	d_mat.albedo_texture = g
 	disc.material = d_mat
 	d_mm.mesh = disc
 	var dmi := MultiMeshInstance3D.new()
@@ -348,8 +371,6 @@ func _label3d(size: int, c: Color) -> Label3D:
 
 func _restyle_crowd() -> void:
 	var b: Dictionary = BOOTS[tier]
-	if d_mat:
-		d_mat.albedo_color = b.trim if tier > 0 else Color(0.35, 0.45, 0.7)
 	if b_mat:
 		b_mat.albedo_color = b.ball
 		b_mat.emission = b.ball
@@ -471,7 +492,7 @@ func _overlay_box(title: String, sub: String) -> VBoxContainer:
 func _show_title() -> void:
 	state = "title"
 	_reset()
-	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane. Kick the right row's gate for more clones and the left row's gate for better boots. Hold the bridge against the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
+	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane. Kick the right row for more clones and the left row for better boots. Hold the bridge against the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -490,7 +511,7 @@ func _reset() -> void:
 	for h in heroes:
 		h.queue_free()
 	heroes.clear()
-	crowd = 0
+	crowd = 4
 	tier = 0
 	rate_mul = 1.0
 	squad_x = 0.0
@@ -606,9 +627,9 @@ func _process(delta: float) -> void:
 
 func _spawn_keepers(delta: float) -> void:
 	# a steady stream that thickens over time; bosses on a timer
-	var rate := minf(1.0 + t * 0.08, 18.0)
+	var rate := minf(0.9 + t * 0.05, 12.0)
 	spawn_acc += rate * delta
-	var hp := 1.0 + t / 25.0 + pow(t / 40.0, 3.2) * 6.0
+	var hp := 1.0 + t / 45.0 + pow(t / 80.0, 2.6) * 4.0
 	while spawn_acc >= 1.0 and k_pos.size() < MAX_KEEPERS:
 		spawn_acc -= 1.0
 		var big := t > 20.0 and randf() < 0.1
@@ -692,7 +713,7 @@ func _move_balls(delta: float) -> void:
 				for ki in buckets[kk]:
 					if dead_k.has(ki):
 						continue
-					var r := 0.5 if k_big[ki] == 1 else 0.36
+					var r := 0.62 if k_big[ki] == 1 else 0.46
 					if absf(k_pos[ki].x - p.x) < r and absf(k_pos[ki].z - p.z) < r:
 						k_hp[ki] -= b_dmg[i]
 						k_flash[ki] = 0.06
@@ -731,8 +752,8 @@ func _move_balls(delta: float) -> void:
 		idx.reverse()
 		for ki in idx:
 			kills += 1
-			if randf() < 0.35:
-				_burst(k_pos[ki], BRUTE_TINT if k_big[ki] == 1 else KEEPER_TINT, 6)
+			if idx.size() < 8 or randf() < 0.4:
+				_burst(k_pos[ki], BRUTE_TINT if k_big[ki] == 1 else KEEPER_TINT, 8)
 			_remove_keeper(ki)
 	b_mm.visible_instance_count = b_pos.size()
 	for j in b_pos.size():
@@ -774,7 +795,7 @@ func _move_keepers(delta: float) -> void:
 	k_mm.visible_instance_count = k_pos.size()
 	for j in k_pos.size():
 		var big := k_big[j] == 1
-		var s := 1.5 if big else 1.0
+		var s := 1.9 if big else 1.3
 		k_mm.set_instance_transform(j, Transform3D(Basis().scaled(Vector3.ONE * s), k_pos[j]))
 		var c := BRUTE_TINT if big else KEEPER_TINT
 		k_mm.set_instance_custom_data(j, Color(c.r, c.g, c.b, 1.0 if k_flash[j] > 0.0 else 0.0))
@@ -856,10 +877,15 @@ func _draw_crowd(delta: float) -> void:
 	counts.fill(0)
 	var unit := Basis().scaled(Vector3.ONE * CLONE_H)
 	var flat := Basis()
-	# each clone runs the kick flipbook at its own offset
+	# every clone stands, then kicks once per KICK_EVERY seconds; four groups take turns so the
+	# squad ripples instead of twitching
+	var kick_len := float(POSES - 1) / POSE_FPS
 	for i in n:
 		var p := base + _slot(i)
-		var f := int(_clock * POSE_FPS + float((i * 7) % 13) * 0.46) % POSES
+		var ph := fposmod(_clock + float(i % 4) * KICK_EVERY * 0.25, KICK_EVERY)
+		var f := 0
+		if ph < kick_len:
+			f = 1 + mini(POSES - 2, int(ph * POSE_FPS))
 		c_mms[f].set_instance_transform(counts[f], Transform3D(unit, p))
 		counts[f] += 1
 		d_mm.set_instance_transform(i, Transform3D(flat, p + Vector3(0, 0.012, 0)))
