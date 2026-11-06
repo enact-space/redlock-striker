@@ -37,7 +37,7 @@
     <div class="bar"><i id="fill"></i></div>
     <p class="note" id="status">Loading the pitch&hellip;</p>
     <button id="play" type="button" hidden>Tap to play</button>
-    <p class="note">Hold your phone upright. Drag left and right to aim the squad; they kick by themselves. Shoot the right rack for recruits and the left rack for better boots, and hold the bridge against the holo keepers.<br>On a computer: arrow keys or drag with the mouse.</p>
+    <p class="note">Hold your phone upright. Drag left and right to pick your lane; your squad kicks by itself. Kick the right gate for more clones of your girl and the left gate for better boots, and hold the bridge against the holo keepers.<br>On a computer: arrow keys or drag with the mouse.</p>
   </div>
 </div>
 
@@ -68,7 +68,7 @@
   const BUILD = "__BUILD__";
   const GODOT_CONFIG = {"args": [], "canvasResizePolicy": 2, "ensureCrossOriginIsolationHeaders": false, "executable": "index",
     "experimentalVK": false, "fileSizes": {"index.pck": __PCK_SIZE__, "index.wasm": 35376909}, "focusCanvas": true, "gdextensionLibs": []};
-  document.getElementById("tag").textContent += " · build " + BUILD;
+  document.getElementById("tag").textContent += " \u00b7 build " + BUILD;
   const fill = document.getElementById("fill");
   const status = document.getElementById("status");
   const play = document.getElementById("play");
