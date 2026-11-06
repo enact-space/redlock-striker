@@ -1,23 +1,31 @@
 extends Node3D
-## Redlock Striker (working title). Portrait lane shooter on a floating Redlock bridge, seen from a
-## fixed steep camera. Your squad stands near the bottom and kicks footballs nonstop; drag left and
-## right to aim it. Holographic keepers pour down the bridge from the far end; touching the squad
-## costs strikers. Two spiral racks flank the far end: shoot the bottom crate's number down to zero
-## for its reward. The recruits rack gives strikers (+1 ... +99), the kit rack gives boot upgrades.
+## Redlock Striker (working title). Portrait lane shooter on a long floating Redlock bridge, seen
+## from a fixed camera behind the squad. Your squad stands at the near end and kicks footballs
+## straight up the bridge nonstop; drag left and right to pick a lane. Holographic keepers pour down
+## the middle lane from the far end; touching the squad costs clones. Two straight rows of reward
+## tiles line the edges behind stone gates: kick a gate's number down to zero for its first tile.
+## The right row gives clones (+1 ... +99), the left row gives boot upgrades.
 ## Every so often a giant holo keeper walks down with a big health number.
-## The squad and the keepers are MultiMeshes (one draw call each) so the crowd can reach hundreds.
+## Every squad member is a clone of the girl you pick: the leader is the full animated model, the
+## rest are baked low-poly kick poses drawn as MultiMeshes (a six-frame flipbook) so the squad can
+## reach hundreds.
 
 const HALF := 3.4            # bridge half width
-const SQUAD_Z := 1.0
-const GATE_Z := -17.0        # where keepers come out
-const TOWER_Z := -8.0       # bottom crates of the racks
-const TOWER_X := 2.45
+const SQUAD_Z := 5.0
+const GATE_Z := -30.0        # where keepers come out
+const ROW_Z := -4.0          # the reward rows' gates
+const ROW_X := 2.65          # centre of each reward row
+const LANE := 1.75           # keepers walk the middle lane, |x| < LANE, until they pass the gates
+const CLONE_H := 1.1        # clone height in metres
+const LEADER_H := 1.3
+const POSES := 6             # kick flipbook frames
+const POSE_FPS := 9.0
 const BALL_SPEED := 26.0
 const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
 const MAX_KEEPERS := 420
 const MAX_CROWD := 300
-const SPACING := 0.32
+const SPACING := 0.36
 const BOOTS := [
 	{"name": "Training boots", "dmg": 1, "rate": 1.0, "suit": Color(0.14, 0.24, 0.5), "trim": Color(0.95, 0.93, 0.85), "ball": Color(1, 1, 1)},
 	{"name": "Studded boots", "dmg": 2, "rate": 1.1, "suit": Color(0.12, 0.36, 0.6), "trim": Color(0.55, 0.95, 0.85), "ball": Color(0.8, 1.0, 0.95)},
@@ -47,6 +55,8 @@ var spawn_acc := 0.0
 var shot_acc := 0.0
 var shake := 0.0
 var hero_models := {}
+var clone_poses := {}     # who -> Array of POSES meshes
+var clips: AnimationLibrary
 var font: Font
 
 # keepers: flat arrays, drawn by one MultiMesh
@@ -61,11 +71,12 @@ var b_vel := PackedVector3Array()
 var b_dmg := PackedFloat32Array()
 var b_mm: MultiMesh
 var b_mat: StandardMaterial3D
-# crowd
-var c_mm: MultiMesh
-var c_pos := PackedVector3Array()
+# crowd: one MultiMesh per kick pose, plus a tier-coloured disc under each clone
+var c_mms: Array[MultiMesh] = []
+var d_mm: MultiMesh
+var d_mat: StandardMaterial3D
 
-var towers: Array[Tower] = []
+var rows: Array[RewardRow] = []
 var cam: Camera3D
 var count_label: Label3D
 var hud_score: Label
@@ -82,6 +93,15 @@ func _ready() -> void:
 		var path := "res://assets/characters/%s.glb" % who
 		if ResourceLoader.exists(path):
 			hero_models[who] = load(path)
+		var poses := []
+		for i in POSES:
+			var pp := "res://assets/characters/%s_kick_%d.res" % [who, i]
+			if ResourceLoader.exists(pp):
+				poses.append(load(pp))
+		if poses.size() == POSES:
+			clone_poses[who] = poses
+	if ResourceLoader.exists("res://assets/characters/football_clips.res"):
+		clips = load("res://assets/characters/football_clips.res")
 	_build_world()
 	_build_ui()
 	_show_title()
@@ -117,62 +137,64 @@ func _build_world() -> void:
 	cam = Camera3D.new()
 	cam.far = 150
 	add_child(cam)
-	cam.position = Vector3(0, 14.5, 8.8)
-	cam.look_at(Vector3(0, 0, -4.8))
+	cam.position = Vector3(0, 11.5, SQUAD_Z + 9.0)
+	cam.look_at(Vector3(0, 0, SQUAD_Z - 12.5))
 
-	# the bridge: a long ivory pitch slab with low navy walls, floating in the night
+	# the bridge: paved stone at the near end, a pitch-green middle lane between the reward rows,
+	# low navy walls, floating in the night
+	var deck_len := SQUAD_Z + 6.0 - (GATE_Z - 4.0)
+	var deck_mid := (SQUAD_Z + 6.0 + GATE_Z - 4.0) * 0.5
 	var deck := MeshInstance3D.new()
-	deck.mesh = Meshes.box(HALF * 2.0, 1.0, 30)
-	deck.position = Vector3(0, -0.5, -5)
+	deck.mesh = Meshes.box(HALF * 2.0, 1.0, deck_len)
+	deck.position = Vector3(0, -0.5, deck_mid)
 	var sh := Shader.new()
 	sh.code = """
 shader_type spatial;
+uniform float row_z;
+uniform float lane;
 varying vec3 wp;
 void vertex() { wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
 void fragment() {
-	float stripe = step(0.5, fract(wp.z / 4.0));
-	vec3 g = mix(vec3(0.17, 0.44, 0.26), vec3(0.2, 0.5, 0.3), stripe);
-	float edge = 1.0 - smoothstep(0.05, 0.09, abs(abs(wp.x) - 3.05));
-	float mid = 1.0 - smoothstep(0.04, 0.08, abs(wp.x));
+	vec2 tile = floor(wp.xz / vec2(1.1, 1.1));
+	float chk = mod(tile.x + tile.y, 2.0);
+	vec2 f = fract(wp.xz / 1.1);
+	float grout = step(0.95, max(f.x, f.y));
+	vec3 pave = mix(vec3(0.78, 0.75, 0.69), vec3(0.73, 0.7, 0.64), chk);
+	pave = mix(pave, vec3(0.55, 0.52, 0.48), grout);
+	float stripe = step(0.5, fract(wp.z / 3.0));
+	vec3 grass = mix(vec3(0.17, 0.44, 0.26), vec3(0.2, 0.5, 0.3), stripe);
+	float in_lane = step(wp.z, row_z) * step(abs(wp.x), lane + 0.2);
+	vec3 c = mix(pave, grass, in_lane);
 	float top = step(-0.01, wp.y);
-	vec3 c = mix(g, vec3(0.95, 0.95, 0.9), max(edge, mid * 0.5));
 	ALBEDO = mix(vec3(0.86, 0.84, 0.79), c, top);
 	ROUGHNESS = 0.9;
 }
 """
 	var dm := ShaderMaterial.new()
 	dm.shader = sh
+	dm.set_shader_parameter("row_z", ROW_Z - 0.4)
+	dm.set_shader_parameter("lane", LANE)
 	deck.material_override = dm
 	add_child(deck)
 	for side in [-1.0, 1.0]:
 		var wall := MeshInstance3D.new()
-		wall.mesh = Meshes.box(0.3, 0.5, 30)
-		wall.position = Vector3(side * (HALF + 0.15), 0.25, -5)
+		wall.mesh = Meshes.box(0.3, 0.6, deck_len)
+		wall.position = Vector3(side * (HALF + 0.15), 0.3, deck_mid)
 		wall.material_override = _std(Color(0.13, 0.19, 0.36))
 		add_child(wall)
 		var strip := MeshInstance3D.new()
-		strip.mesh = Meshes.box(0.32, 0.05, 30)
-		strip.position = Vector3(side * (HALF + 0.15), 0.52, -5)
+		strip.mesh = Meshes.box(0.32, 0.05, deck_len)
+		strip.position = Vector3(side * (HALF + 0.15), 0.62, deck_mid)
 		var m := _std(Color(0.55, 0.95, 0.85))
 		m.emission_enabled = true
 		m.emission = Color(0.55, 0.95, 0.85)
 		m.emission_energy_multiplier = 0.4
 		strip.material_override = m
 		add_child(strip)
-		# the racks stand on round plinths off the bridge edge
-		var plinth := MeshInstance3D.new()
-		var pc := CylinderMesh.new()
-		pc.top_radius = 2.1
-		pc.bottom_radius = 1.7
-		pc.height = 1.0
-		plinth.mesh = pc
-		plinth.position = Vector3(side * (TOWER_X + 1.45), -0.5, TOWER_Z - 2.5)
-		plinth.material_override = _std(Color(0.86, 0.84, 0.79))
-		add_child(plinth)
 	# the keepers' gate at the far end: a holo projector arch
 	var arch := MeshInstance3D.new()
-	arch.mesh = Meshes.box(4.6, 0.4, 0.5)
-	arch.position = Vector3(0, 3.2, GATE_Z + 0.5)
+	arch.mesh = Meshes.box(4.2, 0.4, 0.5)
+	arch.position = Vector3(0, 3.2, GATE_Z - 0.5)
 	var am := _std(Color(0.1, 0.15, 0.3))
 	am.emission_enabled = true
 	am.emission = KEEPER_TINT
@@ -182,7 +204,7 @@ void fragment() {
 	for side in [-1.0, 1.0]:
 		var post := MeshInstance3D.new()
 		post.mesh = Meshes.box(0.4, 3.2, 0.5)
-		post.position = Vector3(side * 2.1, 1.6, GATE_Z + 0.5)
+		post.position = Vector3(side * 1.9, 1.6, GATE_Z - 0.5)
 		post.material_override = am
 		add_child(post)
 	var sign := Label3D.new()
@@ -191,7 +213,7 @@ void fragment() {
 	sign.font_size = 120
 	sign.pixel_size = 0.012
 	sign.modulate = Color(1.0, 0.4, 0.45)
-	sign.position = Vector3(0, 3.9, GATE_Z + 0.5)
+	sign.position = Vector3(0, 3.9, GATE_Z - 0.5)
 	add_child(sign)
 	# stars
 	var stars := MultiMeshInstance3D.new()
@@ -212,13 +234,12 @@ void fragment() {
 	stars.multimesh = mm
 	add_child(stars)
 
-	# racks
+	# reward rows: clones on the right, kit on the left (as you look up the bridge)
 	for side in [-1.0, 1.0]:
-		var tw := Tower.new()
-		add_child(tw)
-		# recruits on the right, kit on the left (as you look up the bridge)
-		tw.setup("recruits" if side > 0 else "kit", side, Vector3(side * TOWER_X, 0, TOWER_Z), font)
-		towers.append(tw)
+		var row := RewardRow.new()
+		add_child(row)
+		row.setup("recruits" if side > 0 else "kit", side, Vector3(side * ROW_X, 0, ROW_Z), font)
+		rows.append(row)
 
 	# keepers
 	k_mm = MultiMesh.new()
@@ -254,32 +275,40 @@ void fragment() {
 	kmi.multimesh = k_mm
 	kmi.material_override = kmat
 	kmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	kmi.custom_aabb = AABB(Vector3(-10, -2, -40), Vector3(20, 10, 50))
+	kmi.custom_aabb = AABB(Vector3(-10, -2, -45), Vector3(20, 12, 60))
 	add_child(kmi)
 
-	# crowd
-	c_mm = MultiMesh.new()
-	c_mm.transform_format = MultiMesh.TRANSFORM_3D
-	c_mm.instance_count = MAX_CROWD
-	c_mm.visible_instance_count = 0
-	var csh := Shader.new()
-	csh.code = """
-shader_type spatial;
-varying vec3 col;
-void vertex() {
-	col = COLOR.rgb;
-	float ph = float(INSTANCE_ID) * 2.3;
-	VERTEX.y += abs(sin(TIME * 9.0 + ph)) * 0.035;
-}
-void fragment() { ALBEDO = col; ROUGHNESS = 0.75; }
-"""
-	var cmat := ShaderMaterial.new()
-	cmat.shader = csh
-	var cmi := MultiMeshInstance3D.new()
-	cmi.multimesh = c_mm
-	cmi.material_override = cmat
-	cmi.custom_aabb = AABB(Vector3(-10, -2, -10), Vector3(20, 6, 20))
-	add_child(cmi)
+	# crowd: the clones, one MultiMesh per kick pose; the meshes keep the model's own materials
+	for f in POSES:
+		var cm := MultiMesh.new()
+		cm.transform_format = MultiMesh.TRANSFORM_3D
+		cm.instance_count = MAX_CROWD
+		cm.visible_instance_count = 0
+		var cmi := MultiMeshInstance3D.new()
+		cmi.multimesh = cm
+		cmi.custom_aabb = AABB(Vector3(-10, -2, -10), Vector3(20, 6, 25))
+		add_child(cmi)
+		c_mms.append(cm)
+	# a glowing disc under every clone shows the squad's boot tier
+	d_mm = MultiMesh.new()
+	d_mm.transform_format = MultiMesh.TRANSFORM_3D
+	d_mm.instance_count = MAX_CROWD + 1
+	d_mm.visible_instance_count = 0
+	var disc := CylinderMesh.new()
+	disc.top_radius = 0.17
+	disc.bottom_radius = 0.17
+	disc.height = 0.02
+	disc.radial_segments = 12
+	disc.rings = 1
+	d_mat = StandardMaterial3D.new()
+	d_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	disc.material = d_mat
+	d_mm.mesh = disc
+	var dmi := MultiMeshInstance3D.new()
+	dmi.multimesh = d_mm
+	dmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	dmi.custom_aabb = AABB(Vector3(-10, -2, -10), Vector3(20, 6, 25))
+	add_child(dmi)
 	_restyle_crowd()
 
 	# balls
@@ -297,7 +326,7 @@ void fragment() { ALBEDO = col; ROUGHNESS = 0.75; }
 	var bmi := MultiMeshInstance3D.new()
 	bmi.multimesh = b_mm
 	bmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	bmi.custom_aabb = AABB(Vector3(-10, -2, -40), Vector3(20, 10, 50))
+	bmi.custom_aabb = AABB(Vector3(-10, -2, -45), Vector3(20, 12, 60))
 	add_child(bmi)
 
 	count_label = _label3d(84, Color.WHITE)
@@ -319,7 +348,8 @@ func _label3d(size: int, c: Color) -> Label3D:
 
 func _restyle_crowd() -> void:
 	var b: Dictionary = BOOTS[tier]
-	c_mm.mesh = Meshes.trainee(b.suit, b.trim)
+	if d_mat:
+		d_mat.albedo_color = b.trim if tier > 0 else Color(0.35, 0.45, 0.7)
 	if b_mat:
 		b_mat.albedo_color = b.ball
 		b_mat.emission = b.ball
@@ -441,7 +471,7 @@ func _overlay_box(title: String, sub: String) -> VBoxContainer:
 func _show_title() -> void:
 	state = "title"
 	_reset()
-	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to aim your squad. Shoot the right rack for recruits and the left rack for better boots. Hold the bridge against the holo keepers.\n\nWho leads the squad?")
+	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane. Kick the right row's gate for more clones and the left row's gate for better boots. Hold the bridge against the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -488,8 +518,9 @@ func _reset() -> void:
 func _start(pick: String) -> void:
 	hero_pick = pick
 	_reset()
-	for tw in towers:
-		tw.hero_name = "Kasumi" if pick == "hiyori" else "Hiyori"
+	if clone_poses.has(pick):
+		for f in POSES:
+			c_mms[f].mesh = clone_poses[pick][f]
 	_add_hero(pick)
 	for c in overlay.get_children():
 		c.queue_free()
@@ -503,7 +534,9 @@ func _add_hero(look: String) -> void:
 	add_child(s)
 	s.setup(look)
 	if hero_models.has(look):
-		s.use_model(hero_models[look], 1.9)   # captains stand a head taller than the trainees
+		s.use_model(hero_models[look], LEADER_H)
+		s.add_clips(clips)
+		s.set_kicking(true)
 	s.position = Vector3(squad_x, 0, SQUAD_Z)
 	heroes.append(s)
 
@@ -573,13 +606,13 @@ func _process(delta: float) -> void:
 
 func _spawn_keepers(delta: float) -> void:
 	# a steady stream that thickens over time; bosses on a timer
-	var rate := minf(0.7 + t * 0.05, 11.0)
+	var rate := minf(1.0 + t * 0.08, 18.0)
 	spawn_acc += rate * delta
-	var hp := 1.0 + t / 35.0 + pow(t / 50.0, 2.6) * 5.0
+	var hp := 1.0 + t / 25.0 + pow(t / 40.0, 3.2) * 6.0
 	while spawn_acc >= 1.0 and k_pos.size() < MAX_KEEPERS:
 		spawn_acc -= 1.0
 		var big := t > 20.0 and randf() < 0.1
-		k_pos.append(Vector3(randf_range(-1.5, 1.5), 0, GATE_Z + randf_range(-0.5, 0.5)))
+		k_pos.append(Vector3(randf_range(-LANE + 0.2, LANE - 0.2), 0, GATE_Z + randf_range(-0.5, 0.5)))
 		k_hp.append(hp * (8.0 if big else 1.0))
 		k_big.append(1 if big else 0)
 		k_flash.append(0.0)
@@ -599,53 +632,44 @@ func _spawn_boss() -> void:
 	_say("GIANT HOLO KEEPER", 1.8)
 
 
-func _targets() -> Array:
-	# what the squad shoots at: the closest keepers in front, the boss, and a rack crate if lined up
-	var out := []
-	var front := SQUAD_Z - 1.0
-	var best := []
-	for i in k_pos.size():
-		var p := k_pos[i]
-		if p.z < front and absf(p.x - squad_x) < 2.6 and p.z > GATE_Z - 1.0:
-			best.append([front - p.z + absf(p.x - squad_x) * 1.5, p])
-	best.sort_custom(func(a, b): return a[0] < b[0])
-	for k in mini(5, best.size()):
-		out.append(best[k][1] + Vector3(0, 0.8, 0))
-	if boss:
-		out.append(boss.position + Vector3(0, 2.5, 0))
-	for tw in towers:
-		var tp := tw.target()
-		if absf(tp.x - squad_x) < 1.3 + _radius() * 0.5:
-			out.append(tp)
-			out.append(tp)
+## Keepers close enough to home in on: the balls fly straight up the bridge unless one of these is
+## right in front of the kicker.
+func _near_keepers() -> PackedVector3Array:
+	var out := PackedVector3Array()
+	var front := SQUAD_Z - 0.5
+	for p in k_pos:
+		if p.z < front and p.z > front - 12.0 and absf(p.x - squad_x) < _radius() + 1.2:
+			out.append(p)
+			if out.size() >= 48:
+				break
 	return out
 
 
 func _fire(delta: float) -> void:
 	var b: Dictionary = BOOTS[tier]
-	var per_sec: float = (crowd + heroes.size() * 3.0) * 1.4 * b.rate * rate_mul   # heroes kick three times as hard
+	var per_sec: float = (crowd + heroes.size() * 3.0) * 1.4 * b.rate * rate_mul   # the leader kicks three times as hard
 	var balls_per_sec := minf(per_sec, MAX_BALLS_PER_SEC)
 	var dmg: float = b.dmg * per_sec / maxf(balls_per_sec, 0.001)
 	shot_acc += balls_per_sec * delta
 	if shot_acc < 1.0:
 		return
-	var targets := _targets()
+	var near := _near_keepers()
 	var n := _units()
 	while shot_acc >= 1.0:
 		shot_acc -= 1.0
 		if b_pos.size() >= MAX_BALLS:
 			continue
 		var from := Vector3(squad_x, 0.3, SQUAD_Z) + _slot(randi() % n)
-		var aim: Vector3 = from + Vector3(0, 0, -30) if targets.is_empty() else targets[randi() % targets.size()]
-		aim += Vector3(randf_range(-0.25, 0.25), 0, 0)
-		var dir := (aim - from)
-		dir.y = 0.0
+		var dir := Vector3(randf_range(-0.03, 0.03), 0, -1)
+		var best := 1.1
+		for q in near:
+			var dx := absf(q.x - from.x)
+			if dx < best and q.z < from.z:
+				best = dx
+				dir = Vector3(q.x - from.x, 0, q.z - from.z)
 		b_pos.append(from)
 		b_vel.append(dir.normalized() * BALL_SPEED)
 		b_dmg.append(dmg)
-	for h in heroes:
-		if randf() < delta * 3.0:
-			h.kick()
 
 
 func _move_balls(delta: float) -> void:
@@ -680,12 +704,13 @@ func _move_balls(delta: float) -> void:
 			gone = true
 			if boss.hit(int(ceil(b_dmg[i]))):
 				_boss_down()
-		if not gone:
-			for tw in towers:
-				var tp := tw.target()
-				if absf(tp.x - p.x) < 0.5 and absf(tp.z - p.z) < 0.45:
+		if not gone and p.z < ROW_Z + 0.4 and absf(p.x) > LANE + 0.1:
+			# up a reward row's lane: the gate takes it (or the row's kerb, past the gate)
+			for row in rows:
+				var tp := row.target()
+				if absf(tp.x - p.x) < 0.95:
 					gone = true
-					var got := tw.hit(maxi(1, int(round(b_dmg[i]))))
+					var got := row.hit(maxi(1, int(round(b_dmg[i]))))
 					if not got.is_empty():
 						_claim(got, tp)
 					break
@@ -732,10 +757,10 @@ func _move_keepers(delta: float) -> void:
 	var i := 0
 	while i < k_pos.size():
 		var p := k_pos[i]
-		var spd := 1.5 if k_big[i] == 1 else 2.1
+		var spd := 1.9 if k_big[i] == 1 else 2.6
 		p.z += spd * delta
-		# past the racks the bridge opens up and they head for the squad
-		if p.z > TOWER_Z + 1.0:
+		# past the reward gates the bridge opens up and they head for the squad
+		if p.z > ROW_Z + 0.5:
 			p.x = move_toward(p.x, squad_x + clampf(p.x - squad_x, -rad, rad), 0.9 * delta)
 		k_pos[i] = p
 		k_flash[i] = maxf(0.0, k_flash[i] - delta)
@@ -796,7 +821,7 @@ func _lose(n: int) -> void:
 
 func _claim(it: Dictionary, at: Vector3) -> void:
 	_burst(at, Color(1, 0.85, 0.4) if it.reward in ["boots", "rate"] else Color(0.5, 0.75, 1.0), 20)
-	var pop := _label3d(110, Color.WHITE)
+	var pop := _label3d(70, Color.WHITE)
 	pop.text = it.text
 	pop.position = at + Vector3(0, 1.0, 0)
 	add_child(pop)
@@ -811,10 +836,6 @@ func _apply(it: Dictionary) -> void:
 	match it.reward:
 		"recruits":
 			crowd = mini(MAX_CROWD - heroes.size(), crowd + int(it.value))
-		"hero":
-			var other := "kasumi" if hero_pick == "hiyori" else "hiyori"
-			_add_hero(other)
-			_say("%s JOINS!" % Striker.LOOKS[other].name.to_upper())
 		"boots":
 			if tier < BOOTS.size() - 1:
 				tier += 1
@@ -829,22 +850,31 @@ func _apply(it: Dictionary) -> void:
 
 func _draw_crowd(delta: float) -> void:
 	var n := crowd
-	c_mm.visible_instance_count = n
 	var base := Vector3(squad_x, 0, SQUAD_Z)
-	var unit := Basis().scaled(Vector3.ONE * 0.78)
+	var counts := PackedInt32Array()
+	counts.resize(POSES)
+	counts.fill(0)
+	var unit := Basis().scaled(Vector3.ONE * CLONE_H)
+	var flat := Basis()
+	# each clone runs the kick flipbook at its own offset
 	for i in n:
-		c_mm.set_instance_transform(i, Transform3D(unit, base + _slot(i)))
-	# the named strikers lead from the front of the crowd
-	var front := -_radius() * 0.85 if n > 0 else 0.0
+		var p := base + _slot(i)
+		var f := int(_clock * POSE_FPS + float((i * 7) % 13) * 0.46) % POSES
+		c_mms[f].set_instance_transform(counts[f], Transform3D(unit, p))
+		counts[f] += 1
+		d_mm.set_instance_transform(i, Transform3D(flat, p + Vector3(0, 0.012, 0)))
+	for f in POSES:
+		c_mms[f].visible_instance_count = counts[f]
+	d_mm.visible_instance_count = n + heroes.size()
 	for i in heroes.size():
 		var h := heroes[i]
-		var off := Vector3((i - (heroes.size() - 1) * 0.5) * 0.75, 0, front - 0.3)
-		var goal := base + off
+		var goal := base + Vector3(0, 0, -_radius() * 0.8 - 0.15 if n > 0 else 0.0)   # the leader at the front
 		h.set_moving(absf(goal.x - h.position.x) > 0.05)
 		h.position = h.position.lerp(goal, 1.0 - exp(-12.0 * delta))
+		d_mm.set_instance_transform(n + i, Transform3D(Basis().scaled(Vector3(1.3, 1, 1.3)), h.position + Vector3(0, 0.012, 0)))
 	count_label.visible = state == "play"
 	count_label.text = str(_units())
-	count_label.position = base + Vector3(0, 2.4, 0)
+	count_label.position = base + Vector3(0, 2.0, 0)
 
 
 func _game_over() -> void:
@@ -914,9 +944,9 @@ func _debug_args() -> void:
 		elif a.begins_with("--crowd="):
 			crowd = int(a.get_slice("=", 1))
 		elif a == "--closeup":
-			cam.position = Vector3(0, 3.0, SQUAD_Z + 4.5)
-			cam.look_at(Vector3(0, 0.9, SQUAD_Z - 1.0))
-			_add_hero("kasumi")
+			cam.position = Vector3(1.2, 2.2, SQUAD_Z + 3.2)
+			cam.look_at(Vector3(0, 0.6, SQUAD_Z - 0.8))
+			_auto = false
 		elif a.begins_with("--tier="):
 			tier = int(a.get_slice("=", 1))
 			_restyle_crowd()
@@ -936,7 +966,7 @@ func _debug_tick(delta: float) -> void:
 		if cnt > 2:
 			target_x = near / cnt
 		else:
-			target_x = TOWER_X if int(_clock / 5.0) % 2 == 0 else -TOWER_X
+			target_x = ROW_X if int(_clock / 5.0) % 2 == 0 else -ROW_X
 	if _auto and state == "over" and _quit_at < 0.0:
 		get_tree().quit()
 	if _shot_path != "" and _shot_at >= 0.0 and _clock >= _shot_at:

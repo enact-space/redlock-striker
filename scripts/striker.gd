@@ -25,6 +25,7 @@ var _rig: Node3D
 var _model: Node3D
 var _anim: AnimationPlayer
 var _moving := false
+var _kicking := false
 
 
 static func _mat(c: Color) -> StandardMaterial3D:
@@ -136,12 +137,45 @@ func use_model(scene: PackedScene, height := 1.6) -> void:
 	_play(["idle_f_loop", "idle"])
 
 
-## Run while the squad slides, idle while it holds still.
+## Adds the football clips (kick, kick_running, pass) to the model as "fb/...".
+func add_clips(lib: AnimationLibrary) -> void:
+	if _anim == null or lib == null:
+		return
+	if not _anim.has_animation_library("fb"):
+		_anim.add_animation_library("fb", lib)
+	if not _anim.animation_finished.is_connected(_on_anim_done):
+		_anim.animation_finished.connect(_on_anim_done)
+
+
+## Kick over and over on the spot (run while the squad slides), instead of idling.
+func set_kicking(on: bool) -> void:
+	_kicking = on
+	_resume()
+
+
+## Run while the squad slides, kick (or idle) while it holds still.
 func set_moving(on: bool) -> void:
 	if _anim == null or on == _moving:
 		return
 	_moving = on
-	_play(["run_f_loop", "run"] if on else ["idle_f_loop", "idle"])
+	_resume()
+
+
+func _resume() -> void:
+	if _anim == null:
+		return
+	if _moving:
+		_play(["run_f_loop", "run_f", "run"])
+	elif _kicking and _anim.has_animation("fb/kick"):
+		_anim.play("fb/kick", 0.12, 1.25)
+		_anim.seek(0.12, false)
+	else:
+		_play(["idle_f_loop", "idle_f", "idle"])
+
+
+func _on_anim_done(_name: StringName) -> void:
+	if not _moving:
+		_resume()
 
 
 func _play(names: Array) -> void:
@@ -174,6 +208,9 @@ func kick() -> void:
 
 func _process(delta: float) -> void:
 	_t += delta
+	# loop just the last stride, the strike and the follow-through
+	if _kicking and not _moving and _anim and _anim.current_animation == "fb/kick" and _anim.current_animation_position > 0.74:
+		_resume()
 	if _rig == null or not _rig.visible:
 		return
 	var w := sin(_t * 13.0)
