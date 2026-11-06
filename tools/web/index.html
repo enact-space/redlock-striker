@@ -1,0 +1,96 @@
+<title>Redlock Striker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;800;900&display=swap">
+<style>
+  /* Layout: one full-bleed portrait game canvas; the loader card sits over it. Single dark look on purpose (Redlock navy pitch at night). */
+  :root {
+    --navy: #0b1328; --navy-2: #1a2848; --ivory: #f5f0e4; --mint: #6ee6c0; --peach: #ff9fb2; --muted: #a9b3cc;
+    --font: "Nunito", "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  [hidden] { display: none !important; }
+  body { background: var(--navy); color: var(--ivory); font-family: var(--font); overflow: hidden; }
+  #canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
+  #loader { position: fixed; inset: 0; display: grid; place-items: center; background: var(--navy);
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px; text-align: center; }
+  .card { display: grid; gap: 14px; max-width: 26rem; width: 100%; }
+  .tag { color: var(--mint); font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; font-size: 0.78rem; margin: 0; }
+  .logo { font-weight: 900; font-size: clamp(2.6rem, 13vw, 4rem); line-height: 0.92; letter-spacing: 0.02em; margin: 0; text-wrap: balance; }
+  .logo span { color: var(--peach); display: block; }
+  .bar { height: 12px; border-radius: 6px; background: var(--navy-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--mint); transition: width .2s; }
+  .note { color: var(--muted); font-weight: 600; font-size: 0.92rem; margin: 0; }
+  #err { color: #f2a08c; }
+  #play { font: 800 1.3rem var(--font); color: var(--navy); background: var(--peach); border: 0; border-radius: 999px; padding: 14px 40px; justify-self: center; cursor: pointer; }
+  #play:focus-visible { outline: 3px solid var(--ivory); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+</style>
+
+<canvas id="canvas" tabindex="0">Your browser doesn't support the game canvas.</canvas>
+
+<div id="loader">
+  <div class="card">
+    <p class="tag" id="tag">Prototype &middot; working title</p>
+    <h1 class="logo">REDLOCK<span>STRIKER</span></h1>
+    <div class="bar"><i id="fill"></i></div>
+    <p class="note" id="status">Loading the pitch&hellip;</p>
+    <button id="play" type="button" hidden>Tap to play</button>
+    <p class="note">Hold your phone upright. Drag left and right to steer the squad; they kick by themselves. Break the crate stacks for rewards and save Spirit Shot for the giant keeper.<br>On a computer: arrow keys or drag with the mouse.</p>
+  </div>
+</div>
+
+<script>
+  // The engine wasm goes up in chunks (per-file size limit); stitch them back together.
+  const WASM_PARTS = ["wasm/part0.wasm", "wasm/part1.wasm", "wasm/part2.wasm"];
+  const WASM_SIZE = 35376909;
+  const PCK_PARTS = __PCK_PARTS__;
+  const realFetch = window.fetch.bind(window);
+  const joined = async (parts, type) => {
+    const bufs = await Promise.all(parts.map(p => realFetch(p).then(r => {
+      if (!r.ok) throw new Error("Couldn't load " + p + " (" + r.status + ")");
+      return r.arrayBuffer();
+    })));
+    return new Blob(bufs, { type });
+  };
+  window.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (/index\.wasm(\?|$)/.test(url))
+      return new Response(await joined(WASM_PARTS, "application/wasm"), { status: 200, headers: { "Content-Type": "application/wasm", "Content-Length": String(WASM_SIZE) } });
+    if (/index\.pck(\?|$)/.test(url))
+      return new Response(await joined(PCK_PARTS, "application/octet-stream"), { status: 200, headers: { "Content-Type": "application/octet-stream" } });
+    return realFetch(input, init);
+  };
+</script>
+<script src="index.js"></script>
+<script>
+  const BUILD = "__BUILD__";
+  const GODOT_CONFIG = {"args": [], "canvasResizePolicy": 2, "ensureCrossOriginIsolationHeaders": false, "executable": "index",
+    "experimentalVK": false, "fileSizes": {"index.pck": __PCK_SIZE__, "index.wasm": 35376909}, "focusCanvas": true, "gdextensionLibs": []};
+  document.getElementById("tag").textContent += " · build " + BUILD;
+  const fill = document.getElementById("fill");
+  const status = document.getElementById("status");
+  const play = document.getElementById("play");
+  const fail = err => { status.id = "err"; status.textContent = "The game couldn't start: " + (err && err.message ? err.message : err); };
+  const engine = new Engine(Object.assign({}, GODOT_CONFIG, {
+    onProgress(current, total) { if (total > 0) fill.style.width = Math.min(100, (current / total) * 100).toFixed(1) + "%"; },
+  }));
+  engine.init("index").then(() => engine.preloadFile("index.pck")).then(() => {
+    fill.style.width = "100%";
+    status.textContent = "Ready.";
+    play.hidden = false;
+    play.focus();
+  }).catch(fail);
+  play.addEventListener("click", async () => {
+    play.disabled = true;
+    const settle = (p, ms) => Promise.race([Promise.resolve(p).catch(() => {}), new Promise(r => setTimeout(r, ms))]);
+    const el = document.documentElement;
+    try { if (el.requestFullscreen) await settle(el.requestFullscreen({ navigationUI: "hide" }), 800); } catch (e) {}
+    try { if (screen.orientation && screen.orientation.lock) await settle(screen.orientation.lock("portrait"), 500); } catch (e) {}
+    engine.start({ args: ["--main-pack", "index.pck"] }).then(() => {
+      document.getElementById("loader").hidden = true;
+      document.getElementById("canvas").focus();
+    }).catch(fail);
+  });
+</script>
