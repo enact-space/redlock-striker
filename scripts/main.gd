@@ -20,7 +20,8 @@ const CLONE_H := 1.1        # clone height in metres
 const LEADER_H := 1.3
 const POSES := 8             # clone frames: 0 = standing, 1..7 = the kick
 const POSE_FPS := 16.0
-const KICK_EVERY := 0.9      # each clone kicks once per this many seconds
+const KICK_EVERY := 0.9
+const WAVE_EVERY := 18.0     # a rush of keepers this often      # each clone kicks once per this many seconds
 const BALL_SPEED := 26.0
 const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
@@ -50,9 +51,11 @@ var t := 0.0
 var kills := 0
 var boss: HoloKeeper
 var boss_label: Label3D
-var next_boss := 40.0
+var next_boss := 55.0
 var bosses_beaten := 0
 var spawn_acc := 0.0
+var next_wave := 20.0
+var wave_left := 0
 var shot_acc := 0.0
 var shake := 0.0
 var hero_models := {}
@@ -68,7 +71,7 @@ var k_flash := PackedFloat32Array()
 var k_mm: MultiMesh
 # balls
 var b_pos := PackedVector3Array()
-var b_vel := PackedVector3Array()
+var b_vel := PackedVector3Array()   # x = the column the ball lines up on
 var b_dmg := PackedFloat32Array()
 var b_mm: MultiMesh
 var b_mat: StandardMaterial3D
@@ -492,7 +495,7 @@ func _overlay_box(title: String, sub: String) -> VBoxContainer:
 func _show_title() -> void:
 	state = "title"
 	_reset()
-	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane. Kick the right row for more clones and the left row for better boots. Hold the bridge against the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
+	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane: your kicks fly straight ahead. Right row: more clones. Left row: better boots. Grey tiles hold nothing. Middle: stop the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -511,14 +514,17 @@ func _reset() -> void:
 	for h in heroes:
 		h.queue_free()
 	heroes.clear()
-	crowd = 4
+	crowd = 0
 	tier = 0
 	rate_mul = 1.0
 	squad_x = 0.0
 	target_x = 0.0
 	t = 0.0
 	kills = 0
-	next_boss = 40.0
+	next_boss = 55.0
+	next_wave = 20.0
+	wave_left = 0
+	spawn_acc = 0.0
 	bosses_beaten = 0
 	k_pos.clear()
 	k_hp.clear()
@@ -605,8 +611,7 @@ func _process(delta: float) -> void:
 		return
 	t += delta
 	target_x += Input.get_axis("ui_left", "ui_right") * 7.0 * delta
-	var lim := maxf(0.0, HALF - 0.3 - _radius())
-	target_x = clampf(target_x, -lim, lim)
+	target_x = clampf(target_x, -ROW_X, ROW_X)   # far enough out to stand right in front of a row
 	squad_x = lerpf(squad_x, target_x, 1.0 - exp(-12.0 * delta))
 	_spawn_keepers(delta)
 	_fire(delta)
@@ -626,14 +631,21 @@ func _process(delta: float) -> void:
 
 
 func _spawn_keepers(delta: float) -> void:
-	# a steady stream that thickens over time; bosses on a timer
-	var rate := minf(0.9 + t * 0.05, 12.0)
+	# a steady trickle plus a rush every WAVE_EVERY seconds, both thickening over time
+	var rate := minf(0.3 + t * 0.025, 9.0)
 	spawn_acc += rate * delta
-	var hp := 1.0 + t / 45.0 + pow(t / 80.0, 2.6) * 4.0
+	if t >= next_wave:
+		next_wave = t + WAVE_EVERY
+		wave_left += 3 + int(t / 8.0)
+	if wave_left > 0:
+		var n := mini(wave_left, int(ceil(14.0 * delta * 6.0)))
+		wave_left -= n
+		spawn_acc += n
+	var hp := 1.0 + t / 40.0 + pow(t / 70.0, 3.3) * 3.0
 	while spawn_acc >= 1.0 and k_pos.size() < MAX_KEEPERS:
 		spawn_acc -= 1.0
-		var big := t > 20.0 and randf() < 0.1
-		k_pos.append(Vector3(randf_range(-LANE + 0.2, LANE - 0.2), 0, GATE_Z + randf_range(-0.5, 0.5)))
+		var big := t > 25.0 and randf() < 0.1
+		k_pos.append(Vector3(randf_range(-LANE + 0.2, LANE - 0.2), 0, GATE_Z + randf_range(-1.0, 0.5)))
 		k_hp.append(hp * (8.0 if big else 1.0))
 		k_big.append(1 if big else 0)
 		k_flash.append(0.0)
@@ -644,7 +656,7 @@ func _spawn_keepers(delta: float) -> void:
 func _spawn_boss() -> void:
 	boss = HoloKeeper.new()
 	add_child(boss)
-	var hp := 800.0 * pow(4.0, bosses_beaten)
+	var hp := 500.0 * pow(3.5, bosses_beaten)
 	boss.setup("boss", hp / 120.0)
 	boss.position = Vector3(0, 0, GATE_Z)
 	boss_label = _label3d(90, Color(1, 0.45, 0.5))
@@ -653,43 +665,26 @@ func _spawn_boss() -> void:
 	_say("GIANT HOLO KEEPER", 1.8)
 
 
-## Keepers close enough to home in on: the balls fly straight up the bridge unless one of these is
-## right in front of the kicker.
-func _near_keepers() -> PackedVector3Array:
-	var out := PackedVector3Array()
-	var front := SQUAD_Z - 0.5
-	for p in k_pos:
-		if p.z < front and p.z > front - 12.0 and absf(p.x - squad_x) < _radius() + 1.2:
-			out.append(p)
-			if out.size() >= 48:
-				break
-	return out
-
-
+## Every kick lines up on the squad's own column: the balls fan in from the clones and fly straight
+## up the bridge, so standing on the right hits only the right row, the left only the left row, and
+## the middle only the keepers in front of you.
 func _fire(delta: float) -> void:
 	var b: Dictionary = BOOTS[tier]
-	var per_sec: float = (crowd + heroes.size() * 3.0) * 1.4 * b.rate * rate_mul   # the leader kicks three times as hard
+	var per_sec: float = (crowd + heroes.size() * 3.0) * 1.0 * b.rate * rate_mul   # the leader kicks three times as hard
 	var balls_per_sec := minf(per_sec, MAX_BALLS_PER_SEC)
 	var dmg: float = b.dmg * per_sec / maxf(balls_per_sec, 0.001)
 	shot_acc += balls_per_sec * delta
 	if shot_acc < 1.0:
 		return
-	var near := _near_keepers()
 	var n := _units()
+	var w := minf(0.7, 0.3 + 0.05 * sqrt(float(n)))
 	while shot_acc >= 1.0:
 		shot_acc -= 1.0
 		if b_pos.size() >= MAX_BALLS:
 			continue
-		var from := Vector3(squad_x, 0.3, SQUAD_Z) + _slot(randi() % n)
-		var dir := Vector3(randf_range(-0.03, 0.03), 0, -1)
-		var best := 1.1
-		for q in near:
-			var dx := absf(q.x - from.x)
-			if dx < best and q.z < from.z:
-				best = dx
-				dir = Vector3(q.x - from.x, 0, q.z - from.z)
+		var from := _clone_pos(randi() % n) + Vector3(0, 0.3, 0)
 		b_pos.append(from)
-		b_vel.append(dir.normalized() * BALL_SPEED)
+		b_vel.append(Vector3(squad_x + randf_range(-w, w), 0, 0))
 		b_dmg.append(dmg)
 
 
@@ -703,7 +698,9 @@ func _move_balls(delta: float) -> void:
 	var dead_k := {}
 	var i := 0
 	while i < b_pos.size():
-		var p := b_pos[i] + b_vel[i] * delta
+		var p := b_pos[i]
+		p.x = move_toward(p.x, b_vel[i].x, 10.0 * delta)
+		p.z -= BALL_SPEED * delta
 		var gone := p.z < GATE_Z - 3.0 or absf(p.x) > HALF + 1.5
 		if not gone:
 			var key := int(floor(p.z))
@@ -726,10 +723,10 @@ func _move_balls(delta: float) -> void:
 			if boss.hit(int(ceil(b_dmg[i]))):
 				_boss_down()
 		if not gone and p.z < ROW_Z + 0.4 and absf(p.x) > LANE + 0.1:
-			# up a reward row's lane: the gate takes it (or the row's kerb, past the gate)
+			# up a reward row's lane: the front tile takes it
 			for row in rows:
 				var tp := row.target()
-				if absf(tp.x - p.x) < 0.95:
+				if absf(tp.x - p.x) < 0.6:
 					gone = true
 					var got := row.hit(maxi(1, int(round(b_dmg[i]))))
 					if not got.is_empty():
@@ -782,7 +779,7 @@ func _move_keepers(delta: float) -> void:
 		p.z += spd * delta
 		# past the reward gates the bridge opens up and they head for the squad
 		if p.z > ROW_Z + 0.5:
-			p.x = move_toward(p.x, squad_x + clampf(p.x - squad_x, -rad, rad), 0.9 * delta)
+			p.x = move_toward(p.x, squad_x + clampf(p.x - squad_x, -rad, rad) * 0.5, 2.0 * delta)
 		k_pos[i] = p
 		k_flash[i] = maxf(0.0, k_flash[i] - delta)
 		var d := Vector2(p.x - centre.x, (p.z - centre.z) * 1.1).length()
@@ -841,6 +838,9 @@ func _lose(n: int) -> void:
 
 
 func _claim(it: Dictionary, at: Vector3) -> void:
+	if it.reward == "none":
+		_burst(at, Color(0.7, 0.72, 0.78), 10)   # a plain tile: just crumbles
+		return
 	_burst(at, Color(1, 0.85, 0.4) if it.reward in ["boots", "rate"] else Color(0.5, 0.75, 1.0), 20)
 	var pop := _label3d(70, Color.WHITE)
 	pop.text = it.text
@@ -881,7 +881,7 @@ func _draw_crowd(delta: float) -> void:
 	# squad ripples instead of twitching
 	var kick_len := float(POSES - 1) / POSE_FPS
 	for i in n:
-		var p := base + _slot(i)
+		var p := _clone_pos(i)
 		var ph := fposmod(_clock + float(i % 4) * KICK_EVERY * 0.25, KICK_EVERY)
 		var f := 0
 		if ph < kick_len:
@@ -901,6 +901,13 @@ func _draw_crowd(delta: float) -> void:
 	count_label.visible = state == "play"
 	count_label.text = str(_units())
 	count_label.position = base + Vector3(0, 2.0, 0)
+
+
+## Where clone i stands: packed round the squad's centre, squeezed in at the bridge edges.
+func _clone_pos(i: int) -> Vector3:
+	var p := Vector3(squad_x, 0, SQUAD_Z) + _slot(i)
+	p.x = clampf(p.x, -HALF + 0.25, HALF - 0.25)
+	return p
 
 
 func _game_over() -> void:
@@ -981,18 +988,19 @@ func _debug_args() -> void:
 func _debug_tick(delta: float) -> void:
 	_clock += delta
 	if _auto and state == "play":
-		# alternate between the racks and the middle every few seconds
-		# like a player: deal with keepers that get close, otherwise work the racks in turn
+		# like a player: deal with keepers once they're past the rows, otherwise work the rows in turn
 		var near := 0.0
 		var cnt := 0
 		for p in k_pos:
-			if p.z > SQUAD_Z - 7.0:
+			if p.z > ROW_Z + 1.0:
 				near += p.x
 				cnt += 1
-		if cnt > 2:
+		if boss and boss.position.z > ROW_Z - 8.0:
+			target_x = boss.position.x
+		elif cnt > 1:
 			target_x = near / cnt
 		else:
-			target_x = ROW_X if int(_clock / 5.0) % 2 == 0 else -ROW_X
+			target_x = ROW_X if int(_clock / 6.0) % 2 == 0 else -ROW_X
 	if _auto and state == "over" and _quit_at < 0.0:
 		get_tree().quit()
 	if _shot_path != "" and _shot_at >= 0.0 and _clock >= _shot_at:

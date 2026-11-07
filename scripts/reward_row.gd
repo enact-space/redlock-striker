@@ -3,12 +3,15 @@ extends Node3D
 ## A straight row of reward tiles along one edge of the bridge. Kick balls up the row's lane: the
 ## number over the front tile counts down, at zero that tile bursts, its reward flies to the squad
 ## and the whole row slides one tile forward.
-## The recruits row hands out clones (+1 ... +99); the kit row hands out boot upgrades.
+## The recruits row hands out clones (+1 early, up to +99 far up); the kit row hands out boot
+## upgrades. Like the video's barrel towers, plain tiles sit between the prizes: they cost hits and
+## give nothing, so you don't get a power-up every time.
 
 signal claimed(item: Dictionary)
 
-const RECRUITS := [2, 3, 5, 5, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 75, 99]
-const KIT := ["boots", "boots", "boots", "boots", "boots", "rate", "rate", "rate"]
+# 0 / "" = a plain tile
+const RECRUITS := [1, 0, 1, 0, 1, 1, 0, 2, 0, 2, 0, 0, 3, 0, 3, 5, 0, 0, 5, 8, 0, 10, 0, 0, 15, 0, 20, 0, 25, 30, 0, 40, 0, 50, 75, 99]
+const KIT := ["", "", "boots", "", "", "", "rate", "", "", "boots", "", "", "", "", "boots", "", "rate", "", "", "", "boots", "", "", "", "rate", "", "", "boots", "", "", "", "", "rate"]
 const SLOTS := 20
 const STEP := 1.1
 const WIDTH := 1.1
@@ -80,11 +83,15 @@ func _next_reward() -> Dictionary:
 	var k := made
 	made += 1
 	if kind == "recruits":
-		var v: int = RECRUITS[mini(k, RECRUITS.size() - 1)]
-		var hits := int(round(4.0 * pow(1.38, k)))
+		var hits := int(round(3.0 * pow(1.24, k))) + k
+		var v: int = RECRUITS[k] if k < RECRUITS.size() else (99 if k % 2 == 0 else 0)
+		if v == 0:
+			return {"reward": "none", "value": 0, "hits": hits, "text": ""}
 		return {"reward": "recruits", "value": v, "hits": hits, "text": "+%d" % v}
-	var r: String = KIT[mini(k, KIT.size() - 1)]
-	var hits := int(round(12.0 * pow(2.6, k)))
+	var r: String = KIT[k] if k < KIT.size() else ("rate" if k % 4 == 0 else "")
+	var hits := int(round(8.0 * pow(1.35, k))) + 3 * k
+	if r == "":
+		return {"reward": "none", "value": 0, "hits": hits, "text": ""}
 	if r == "boots":
 		return {"reward": "boots", "value": 1, "hits": hits, "text": "BOOTS"}
 	return {"reward": "rate", "value": 1, "hits": hits, "text": "RAPID"}
@@ -97,11 +104,14 @@ func _push_item() -> void:
 	var tile := MeshInstance3D.new()
 	tile.mesh = Meshes.box(WIDTH - 0.12, 0.2, STEP - 0.14)
 	var m := StandardMaterial3D.new()
-	var gold := kind == "recruits"
-	m.albedo_color = Color(0.98, 0.76, 0.26) if gold else Color(0.36, 0.62, 0.98)
-	m.emission_enabled = true
-	m.emission = m.albedo_color
-	m.emission_energy_multiplier = 0.2
+	if d.reward == "none":
+		m.albedo_color = Color(0.3, 0.33, 0.4)   # plain slate tile
+	else:
+		var big := kind == "kit" or int(d.value) >= 10
+		m.albedo_color = Color(0.95, 0.62, 0.08) if big else Color(0.12, 0.42, 0.95)
+		m.emission_enabled = true
+		m.emission = m.albedo_color
+		m.emission_energy_multiplier = 0.25
 	tile.material_override = m
 	tile.position.y = 0.1
 	n.add_child(tile)
