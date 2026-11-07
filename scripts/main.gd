@@ -18,8 +18,12 @@ const ROW_Z := -4.0          # the reward rows' gates
 const ROW_X := 2.65          # centre of each reward row
 const LANE := 1.75           # the middle lane between the reward rows
 const MARCH := 0.8           # keepers march down in a column, |x| < MARCH, straight at the near end
-const CLONE_H := 1.1        # clone height in metres
-const LEADER_H := 1.3
+const CLONE_H := 1.45       # clone height in metres
+const LEADER_H := 1.7
+const FIT_FOV := 25.0         # portrait camera: horizontal field of view
+const FIT_X := 3.6            # this far out from the middle meets the screen's side at the squad line
+const FIT_TOP_PX := 132.0     # the keeper arch's top sits this far down, under the HUD
+const FIT_BACK := 2.0         # the screen's bottom edge cuts the deck this far behind the squad
 const POSES := 8             # clone frames: 0 = standing, 1..7 = the kick
 const POSE_FPS := 16.0
 const KICK_EVERY := 0.9
@@ -30,7 +34,7 @@ const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
 const MAX_KEEPERS := 420
 const MAX_CROWD := 300
-const SPACING := 0.36
+const SPACING := 0.44
 const BOOTS := [
 	{"name": "Training boots", "dmg": 1, "rate": 1.0, "suit": Color(0.14, 0.24, 0.5), "trim": Color(0.95, 0.93, 0.85), "ball": Color(1, 1, 1)},
 	{"name": "Studded boots", "dmg": 2, "rate": 1.1, "suit": Color(0.12, 0.36, 0.6), "trim": Color(0.55, 0.95, 0.85), "ball": Color(0.8, 1.0, 0.95)},
@@ -388,15 +392,61 @@ func _restyle_crowd() -> void:
 		b_mat.emission = b.ball
 
 
-## Portrait phones keep the bridge's width on screen; a wide window keeps the vertical view.
+## Portrait phones: the bridge fills the whole screen. Its width at the squad fills the screen's
+## width, the keeper arch sits just under the HUD and the deck just behind the squad meets the
+## bottom edge, whatever the phone's shape.
 func _fit_camera() -> void:
 	var sz := get_viewport().get_visible_rect().size
-	if sz.y > 0 and sz.x / sz.y > 0.62:
+	if sz.y <= 0:
+		return
+	# a wide window frames the same view as a 9:16 phone, centred, with open sky either side
+	var wide := sz.x / sz.y > 0.66
+	if wide:
+		sz.x = sz.y * 0.5625
+	var half_h := sz.y / sz.x                          # screen half height, in half-widths
+	var top := half_h - 2.0 * FIT_TOP_PX / sz.x       # where the arch's top should land
+	var f := 1.0 / tan(deg_to_rad(FIT_FOV) * 0.5)
+	var best := Vector3(9.0, 40.0, 1e9)               # height, pitch, error
+	for pass_i in 2:
+		var h0 := 4.0 if pass_i == 0 else best.x - 0.2
+		var h1 := 30.0 if pass_i == 0 else best.x + 0.2
+		var p0 := 12.0 if pass_i == 0 else best.y - 0.5
+		var p1 := 60.0 if pass_i == 0 else best.y + 0.5
+		var steps := 60
+		for i in steps + 1:
+			var h := lerpf(h0, h1, float(i) / steps)
+			for j in steps + 1:
+				var pitch := deg_to_rad(lerpf(p0, p1, float(j) / steps))
+				var zc := _fit_z(h, pitch, f)
+				var e1 := _fit_v(Vector3(0, 3.5, GATE_Z - 0.6), h, zc, pitch, f) - top
+				var e2 := _fit_v(Vector3(0, 0, SQUAD_Z + FIT_BACK), h, zc, pitch, f) + half_h
+				var e := e1 * e1 + e2 * e2
+				if e < best.z:
+					best = Vector3(h, rad_to_deg(pitch), e)
+	var pitch_r := deg_to_rad(best.y)
+	if wide:
 		cam.keep_aspect = Camera3D.KEEP_HEIGHT
-		cam.fov = 64.0
+		cam.fov = rad_to_deg(2.0 * atan(half_h / f))
 	else:
 		cam.keep_aspect = Camera3D.KEEP_WIDTH
-		cam.fov = 42.0
+		cam.fov = FIT_FOV
+	cam.position = Vector3(0, best.x, _fit_z(best.x, pitch_r, f))
+	cam.rotation = Vector3(-pitch_r, 0, 0)
+
+
+## Camera z that puts the bridge's edge (FIT_X) at the squad line on the screen's side edge.
+func _fit_z(h: float, pitch: float, f: float) -> float:
+	return SQUAD_Z + (FIT_X * f - h * sin(pitch)) / cos(pitch)
+
+
+## Screen height of a point (in half-widths, up is +) for a camera at (0, h, zc) looking down by pitch.
+func _fit_v(p: Vector3, h: float, zc: float, pitch: float, f: float) -> float:
+	var dy := p.y - h
+	var dz := p.z - zc
+	var fwd := -dy * sin(pitch) - dz * cos(pitch)
+	if fwd < 0.05:
+		return -99.0
+	return (dy * cos(pitch) - dz * sin(pitch)) / fwd * f
 
 
 # ---------------------------------------------------------------- ui
@@ -450,25 +500,25 @@ func _build_ui() -> void:
 	top.offset_top = 14
 	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(top)
-	hud_kit = _label("", 26, Color(1.0, 0.82, 0.45))
+	hud_kit = _label("", 30, Color(1.0, 0.82, 0.45))
 	hud_kit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(hud_kit)
-	hud_score = _label("", 26, Color(0.85, 0.92, 1.0))
+	hud_score = _label("", 30, Color(0.85, 0.92, 1.0))
 	top.add_child(hud_score)
 	# level name and a bar that fills until the level's giant keeper arrives
 	var mid := VBoxContainer.new()
 	mid.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	mid.offset_left = -110
-	mid.offset_right = 110
-	mid.offset_top = 52
+	mid.offset_left = -140
+	mid.offset_right = 140
+	mid.offset_top = 54
 	mid.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(mid)
-	hud_level = _label("", 30, Color(1, 1, 1))
+	hud_level = _label("", 38, Color(1, 1, 1))
 	hud_level.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	mid.add_child(hud_level)
 	hud_bar = ProgressBar.new()
 	hud_bar.show_percentage = false
-	hud_bar.custom_minimum_size = Vector2(220, 14)
+	hud_bar.custom_minimum_size = Vector2(280, 18)
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = Color(0.1, 0.14, 0.25, 0.6)
 	bg.set_corner_radius_all(7)
@@ -1037,7 +1087,7 @@ func _draw_crowd(delta: float) -> void:
 		var goal := base + Vector3(0, 0, -_radius() * 0.8 - 0.15 if n > 0 else 0.0)   # the leader at the front
 		h.set_moving(absf(goal.x - h.position.x) > 0.05)
 		h.position = h.position.lerp(goal, 1.0 - exp(-12.0 * delta))
-		d_mm.set_instance_transform(n + i, Transform3D(Basis().scaled(Vector3(1.3, 1, 1.3)), h.position + Vector3(0, 0.012, 0)))
+		d_mm.set_instance_transform(n + i, Transform3D(Basis().scaled(Vector3(1.7, 1, 1.7)), h.position + Vector3(0, 0.012, 0)))
 	count_label.visible = state == "play"
 	count_label.text = str(_units())
 	count_label.position = base + Vector3(0, 2.0, 0)
@@ -1046,7 +1096,7 @@ func _draw_crowd(delta: float) -> void:
 ## Where clone i stands: packed round the squad's centre, squeezed in at the bridge edges.
 func _clone_pos(i: int) -> Vector3:
 	var p := Vector3(squad_x, 0, SQUAD_Z) + _slot(i)
-	p.x = clampf(p.x, -HALF + 0.25, HALF - 0.25)
+	p.x = clampf(p.x, -HALF + 0.5, HALF - 0.5)
 	return p
 
 

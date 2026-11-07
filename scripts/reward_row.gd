@@ -15,7 +15,7 @@ const KIT := ["", "", "boots", "", "", "", "rate", "", "", "boots", "", "", "", 
 const SLOTS := 12
 const STEP := 1.9
 const WIDTH := 1.15
-const HEIGHT := 1.0
+const HEIGHT := 1.2
 const THICK := 0.34
 
 var kind := "recruits"
@@ -72,7 +72,7 @@ func _build() -> void:
 	_num.font = _font
 	_num.font_size = 110
 	_num.outline_size = 24
-	_num.pixel_size = 0.008
+	_num.pixel_size = 0.0105
 	_num.modulate = Color(1.0, 0.95, 0.6)
 	_num.position = front + Vector3(0, HEIGHT + 0.55, 0.2)
 	_num.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -140,7 +140,7 @@ func _push_item() -> void:
 		lab.text = d.text
 		lab.font_size = 72 if d.text.length() <= 3 else 44
 		lab.outline_size = 16
-		lab.pixel_size = 0.0085
+		lab.pixel_size = 0.0098
 		lab.rotation_degrees.x = -28   # leans back a little, square to the camera
 		lab.position = Vector3(0, HEIGHT * 0.5, THICK * 0.5 + 0.05)
 		lab.render_priority = 1
