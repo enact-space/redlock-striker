@@ -16,7 +16,8 @@ const SQUAD_Z := 5.0
 const GATE_Z := -30.0        # where keepers come out
 const ROW_Z := -4.0          # the reward rows' gates
 const ROW_X := 2.65          # centre of each reward row
-const LANE := 1.75           # keepers walk the middle lane, |x| < LANE, until they pass the gates
+const LANE := 1.75           # the middle lane between the reward rows
+const MARCH := 0.8           # keepers march down in a column, |x| < MARCH, straight at the near end
 const CLONE_H := 1.1        # clone height in metres
 const LEADER_H := 1.3
 const POSES := 8             # clone frames: 0 = standing, 1..7 = the kick
@@ -527,7 +528,7 @@ func _overlay_box(title: String, sub: String) -> VBoxContainer:
 func _show_title() -> void:
 	state = "title"
 	_reset()
-	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane: your kicks fly straight ahead. Right row: more clones. Left row: better boots. Grey tiles hold nothing. Middle: stop the holo keepers. Beat the giant keeper at the end of each level to unlock the next.\n\nWho do you play? Every new squad member is her clone.")
+	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane: your kicks fly straight ahead. Right row: more clones. Left row: better boots. Grey walls hold nothing. Middle: stop the holo keepers. Beat the giant keeper at the end of each level to unlock the next.\n\nWho do you play? Every new squad member is her clone.")
 	# level picker: any level you've unlocked
 	var pick := HBoxContainer.new()
 	pick.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -570,7 +571,7 @@ func _show_title() -> void:
 
 ## How tough level L is compared with level 1 (keeper health and numbers).
 func _tough() -> float:
-	return 1.0 + 0.16 * (level - 1)
+	return pow(1.18, level - 1)
 
 
 ## Seconds until the level's giant keeper walks out: later levels give a little longer to grow.
@@ -578,10 +579,10 @@ func _boss_time() -> float:
 	return 55.0 + 6.0 * minf(level - 1, 10)
 
 
-## Clones you start a level with: one more for every two levels behind you, so later levels open with
+## Clones you start a level with: two, plus one more for every two levels behind you, so later levels open with
 ## a squad ready for their tougher keepers.
 func _head_start() -> int:
-	return mini(10, (level - 1) / 2)
+	return 2 + mini(10, (level - 1) / 2)
 
 
 func _load_save() -> void:
@@ -759,11 +760,11 @@ func _process(delta: float) -> void:
 
 func _spawn_keepers(delta: float) -> void:
 	# a steady trickle plus a rush every WAVE_EVERY seconds, both thickening over time
-	var rate := minf((0.3 + t * 0.025) * (1.0 + 0.05 * (level - 1)), 9.0)
+	var rate := minf((0.25 + t * 0.02) * (1.0 + 0.05 * (level - 1)), 9.0)
 	spawn_acc += rate * delta
 	if t >= next_wave:
 		next_wave = t + WAVE_EVERY
-		wave_left += 3 + int(t / 8.0)
+		wave_left += 2 + int(t / 10.0)
 	if wave_left > 0:
 		var n := mini(wave_left, int(ceil(14.0 * delta * 6.0)))
 		wave_left -= n
@@ -772,7 +773,7 @@ func _spawn_keepers(delta: float) -> void:
 	while spawn_acc >= 1.0 and k_pos.size() < MAX_KEEPERS:
 		spawn_acc -= 1.0
 		var big := t > 25.0 and randf() < 0.1
-		k_pos.append(Vector3(randf_range(-LANE + 0.2, LANE - 0.2), 0, GATE_Z + randf_range(-1.0, 0.5)))
+		k_pos.append(Vector3(randf_range(-MARCH, MARCH), 0, GATE_Z + randf_range(-1.0, 0.5)))
 		k_hp.append(hp * (8.0 if big else 1.0))
 		k_big.append(1 if big else 0)
 		k_flash.append(0.0)
@@ -783,7 +784,7 @@ func _spawn_keepers(delta: float) -> void:
 func _spawn_boss() -> void:
 	boss = HoloKeeper.new()
 	add_child(boss)
-	var hp := 350.0 * pow(1.45, level - 1)
+	var hp := 250.0 * pow(1.55, level - 1)
 	boss.setup("boss", hp / 120.0)
 	boss_hp = boss.max_hp
 	boss.position = Vector3(0, 0, GATE_Z)
@@ -905,14 +906,17 @@ func _move_keepers(delta: float) -> void:
 		var p := k_pos[i]
 		var spd := 1.9 if k_big[i] == 1 else 2.6
 		p.z += spd * delta
-		# past the reward gates the bridge opens up and they head for the squad
-		if p.z > ROW_Z + 0.5:
-			p.x = move_toward(p.x, squad_x + clampf(p.x - squad_x, -rad, rad) * 0.5, 2.0 * delta)
+		# they march straight down their own line; they never turn towards you
 		k_pos[i] = p
 		k_flash[i] = maxf(0.0, k_flash[i] - delta)
 		var d := Vector2(p.x - centre.x, (p.z - centre.z) * 1.1).length()
-		if d < rad + 0.2 or p.z > SQUAD_Z + 3.0:
-			if p.z <= SQUAD_Z + 3.0:
+		if d < rad + 0.2 or p.z > SQUAD_Z + 1.0:
+			# walking into the squad, or slipping past it off the end of the bridge, costs clones
+			if d >= rad + 0.2:
+				# slipped past: costs clones, never the leader herself
+				crowd = maxi(0, crowd - (3 if k_big[i] == 1 else 1))
+				_leak_flash()
+			else:
 				_lose(3 if k_big[i] == 1 else 1)
 			_remove_keeper(i)
 			continue
@@ -932,7 +936,6 @@ func _move_boss(delta: float) -> void:
 	var front := SQUAD_Z - _radius() - 1.0
 	if boss.position.z < front:
 		boss.position.z += 0.9 * delta
-		boss.position.x = move_toward(boss.position.x, clampf(squad_x, -1.5, 1.5), 0.4 * delta)
 	else:
 		# it reached the squad: it flattens strikers until it falls
 		if randf() < delta * 3.0:
@@ -956,6 +959,12 @@ func _boss_down() -> void:
 	call_deferred("_level_cleared")   # not mid-way through the ball loop
 
 
+## A keeper got past: a red flash along the near end of the bridge.
+func _leak_flash() -> void:
+	shake = maxf(shake, 0.12)
+	_burst(Vector3(squad_x, 0, SQUAD_Z + 1.0), Color(1, 0.25, 0.3), 6)
+
+
 func _lose(n: int) -> void:
 	for k in n:
 		if crowd > 0:
@@ -967,10 +976,12 @@ func _lose(n: int) -> void:
 
 
 func _claim(it: Dictionary, at: Vector3) -> void:
+	# the wall smashes into chunks; a plain wall gives nothing
+	_burst(at - Vector3(0, 0.5, 0), it.get("color", Color(0.6, 0.62, 0.68)), 18, 0.2)
+	_burst(at - Vector3(0, 0.5, 0), Color(0.78, 0.8, 0.85), 8, 0.14)
+	shake = maxf(shake, 0.08)
 	if it.reward == "none":
-		_burst(at, Color(0.7, 0.72, 0.78), 10)   # a plain tile: just crumbles
 		return
-	_burst(at, Color(1, 0.85, 0.4) if it.reward in ["boots", "rate"] else Color(0.5, 0.75, 1.0), 20)
 	var pop := _label3d(70, Color.WHITE)
 	pop.text = it.text
 	pop.position = at + Vector3(0, 1.0, 0)
@@ -1052,7 +1063,7 @@ func _game_over() -> void:
 
 # ---------------------------------------------------------------- effects
 
-func _burst(pos: Vector3, c: Color, n: int) -> void:
+func _burst(pos: Vector3, c: Color, n: int, chunk := 0.09) -> void:
 	var p := CPUParticles3D.new()
 	p.one_shot = true
 	p.emitting = true
@@ -1064,7 +1075,7 @@ func _burst(pos: Vector3, c: Color, n: int) -> void:
 	p.initial_velocity_min = 2.0
 	p.initial_velocity_max = 5.0
 	p.gravity = Vector3(0, -9, 0)
-	var q := Meshes.box(0.09, 0.09, 0.09)
+	var q := Meshes.box(chunk, chunk, chunk)
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.albedo_color = c

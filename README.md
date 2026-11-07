@@ -4,23 +4,24 @@ A portrait lane-shooter spin-off of [Redlock](https://github.com/enact-space/red
 
 A fixed camera behind the squad looks up a long floating Redlock bridge. You pick Hiyori or Kasumi, and every
 squad member is a clone of her. The squad stands at the near end and kicks footballs straight up the bridge
-nonstop; drag left and right to pick a lane. Holographic keepers pour down the middle lane from the gate at the far
-end and cost you clones when they reach the squad. Two straight rows of reward tiles line the edges behind stone
-gates: kick a gate's number down to zero and its first tile flies to the squad while the row slides forward. The
+nonstop; drag left and right to pick a lane. Holographic keepers march straight down the middle (they never turn
+towards you): walking into the squad costs clones, and so does each one that slips past. Two rows of low walls line the edge lanes: kick the front wall's
+number down to zero and it smashes, its upgrade flies to the squad and the walls behind slide forward (grey walls
+hold nothing). The
 right row gives clones (+1 ... +99), the left row gives boot upgrades (more damage, faster kicks, a new disc colour
 under the squad).
 
 Levels: each level is a fresh run. A bar under the level name fills until the level's giant holo keeper walks
 out; beat it to clear the level and unlock the next. Later levels have tougher, more numerous keepers and a bigger
-boss, and you start them with one extra clone per two levels behind you (up to 10). The title screen lets you pick any
+boss, and you start them with two clones plus one per two levels behind you (up to 12). The title screen lets you pick any
 unlocked level; progress is saved in `user://striker_save.json`. A near-perfect bot (`--auto --level=N`) clears
-levels 1-15 and fails around 20.
+levels 1-16 and fails around 20.
 
 ## Code
 
 - `scripts/main.gd`: world, camera, HUD, keeper stream, balls, crowd, bosses, rewards. Keepers, balls and the crowd
   are MultiMeshes so the squad can reach 300.
-- `scripts/reward_row.gd`: a straight row of reward tiles behind a gate.
+- `scripts/reward_row.gd`: a row of smashable walls (plain or upgrade).
 - `scripts/meshes.gd`: merged one-draw-call meshes (holo keeper).
 - `scripts/holo_keeper.gd`: the giant holo keeper boss.
 - `scripts/striker.gd`: the squad leader, the full animated model. Kicks on the spot (the `kick` clip, looped from
