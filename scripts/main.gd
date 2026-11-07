@@ -30,6 +30,7 @@ const KICK_EVERY := 0.9
 const WAVE_EVERY := 18.0     # a rush of keepers this often
 const SAVE_PATH := "user://striker_save.json"      # each clone kicks once per this many seconds
 const BALL_SPEED := 26.0
+const MAX_RATE := 4.0        # RAPID stacks up to this many times the base kick rate
 const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
 const MAX_KEEPERS := 420
@@ -1053,9 +1054,9 @@ func _apply(it: Dictionary) -> void:
 				_restyle_crowd()
 				_say(BOOTS[tier].name.to_upper() + "!")
 			else:
-				rate_mul *= 1.25
+				rate_mul = minf(MAX_RATE, rate_mul * 1.2)
 		"rate":
-			rate_mul *= 1.25
+			rate_mul = minf(MAX_RATE, rate_mul * 1.2)
 			_say("RAPID KICKS!")
 
 
@@ -1141,6 +1142,7 @@ func _burst(pos: Vector3, c: Color, n: int, chunk := 0.09) -> void:
 ## --auto (play by itself), --t=secs (start later in the run), --crowd=N, --tier=N,
 ## --shot=path.png --at=secs (screenshot then quit), --quit=secs (print a summary).
 var _auto := false
+var _trace := false            # --trace: print the bot's progress every 5 s
 var _shot_path := ""
 var _shot_at := -1.0
 var _quit_at := -1.0
@@ -1152,6 +1154,8 @@ func _debug_args() -> void:
 	for a in args:
 		if a == "--auto":
 			_auto = true
+		if a == "--trace":
+			_trace = true
 		elif a.begins_with("--shot="):
 			_shot_path = a.get_slice("=", 1)
 		elif a.begins_with("--at="):
@@ -1197,6 +1201,8 @@ func _debug_tick(delta: float) -> void:
 			target_x = near / cnt
 		else:
 			target_x = ROW_X if int(_clock / 6.0) % 2 == 0 else -ROW_X
+	if _auto and _trace and state == "play" and int(_clock * 60.0) % 300 == 0:
+		print("  t=%d units=%d tier=%d rate=%.2f rows=%s" % [t, _units(), tier, rate_mul, str(rows.map(func(r): return r.made))])
 	if _auto and state == "cleared" and _quit_at < 0.0:
 		print("CLEAR level=%d t=%d units=%d tier=%d kills=%d" % [level, t, _units(), tier, kills])
 		get_tree().quit()

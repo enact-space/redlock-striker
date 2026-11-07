@@ -6,9 +6,9 @@ A fixed camera behind the squad looks up a long floating Redlock bridge. You pic
 squad member is a clone of her. The squad stands at the near end and kicks footballs straight up the bridge
 nonstop; drag left and right to pick a lane. Holographic keepers march straight down the middle (they never turn
 towards you): walking into the squad costs clones, and so does each one that slips past. Two rows of low walls line the edge lanes: kick the front wall's
-number down to zero and it smashes, its upgrade flies to the squad and the walls behind slide forward (grey walls
-hold nothing). The
-right row gives clones (+1 ... +99), the left row gives boot upgrades (more damage, faster kicks, a new disc colour
+number down to zero and it smashes, its upgrade flies to the squad and the walls behind slide forward (the little
+grey walls hold nothing). The
+right row gives clones: runs of cheap +1 walls first, bigger prizes further up (+2 ... +99), the left row gives boot upgrades (more damage, faster kicks, a new disc colour
 under the squad).
 
 Levels: each level is a fresh run. A bar under the level name fills until the level's giant holo keeper walks

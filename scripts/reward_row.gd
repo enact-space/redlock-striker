@@ -9,14 +9,23 @@ extends Node3D
 
 signal claimed(item: Dictionary)
 
-# 0 / "" = a plain tile
-const RECRUITS := [1, 1, 0, 1, 2, 0, 2, 0, 2, 0, 0, 3, 0, 3, 5, 0, 0, 5, 8, 0, 10, 0, 0, 15, 0, 20, 0, 25, 30, 0, 40, 0, 50, 75, 99]
-const KIT := ["", "", "boots", "", "", "", "rate", "", "", "boots", "", "", "", "", "boots", "", "rate", "", "", "", "boots", "", "", "", "rate", "", "", "boots", "", "", "", "", "rate"]
-const SLOTS := 12
-const STEP := 1.9
+# The recruits row, front to back: runs of cheap +1 walls with a little plain wall now and then,
+# the prizes growing further up. Each pair is [value, how many]; 0 = a little plain wall.
+const RECRUIT_PLAN := [
+	[1, 6], [0, 1], [1, 4], [0, 1], [2, 3], [0, 1], [1, 3], [2, 2], [0, 1], [3, 3], [0, 1],
+	[2, 2], [5, 2], [0, 1], [5, 2], [10, 1], [0, 1], [10, 2], [15, 1], [0, 1], [20, 1], [25, 1],
+	[0, 1], [30, 1], [50, 1], [0, 1], [75, 1], [99, 1],
+]
+# The kit row: an upgrade with a little plain wall between most of them. "" = a little plain wall.
+const KIT := ["rate", "", "boots", "", "rate", "rate", "", "boots", "", "rate", "", "rate", "boots", "", "rate", "", "boots", "", "rate", "rate", "", "boots"]
+const SLOTS := 14
+const STEP := 1.6
 const WIDTH := 1.15
-const HEIGHT := 1.2
-const THICK := 0.34
+const HEIGHT := 0.85          # a prize wall
+const LOW := 0.55             # a little plain wall
+const THICK := 0.3
+
+static var RECRUITS: Array[int] = []
 
 var kind := "recruits"
 var side := 1.0
@@ -31,6 +40,10 @@ var _shake := 0.0
 func setup(k: String, s: float, at: Vector3, font: Font) -> void:
 	kind = k
 	side = s
+	if RECRUITS.is_empty():
+		for pair in RECRUIT_PLAN:
+			for _i in pair[1]:
+				RECRUITS.append(pair[0])
 	front = at
 	_font = font
 	_build()
@@ -74,26 +87,31 @@ func _build() -> void:
 	_num.outline_size = 24
 	_num.pixel_size = 0.0105
 	_num.modulate = Color(1.0, 0.95, 0.6)
-	_num.position = front + Vector3(0, HEIGHT + 0.55, 0.2)
+	_num.position = front + Vector3(0, HEIGHT + 0.95, 0.2)
 	_num.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_num.no_depth_test = true
 	_num.render_priority = 2
 	add_child(_num)
 
 
+## What one wall of the cheapest prize costs this far up the row, in hits.
+static func _unit_cost(k: int) -> float:
+	return 0.7 * pow(1.2, k) + 0.1 * k
+
+
 func _next_reward() -> Dictionary:
 	var k := made
 	made += 1
+	var u := _unit_cost(k)
 	if kind == "recruits":
-		var hits := int(round(3.0 * pow(1.24, k))) + k
 		var v: int = RECRUITS[k] if k < RECRUITS.size() else (99 if k % 2 == 0 else 0)
 		if v == 0:
-			return {"reward": "none", "value": 0, "hits": hits, "text": ""}
-		return {"reward": "recruits", "value": v, "hits": hits, "text": "+%d" % v}
-	var r: String = KIT[k] if k < KIT.size() else ("rate" if k % 4 == 0 else "")
-	var hits := int(round(8.0 * pow(1.35, k))) + 3 * k
+			return {"reward": "none", "value": 0, "hits": maxi(3, int(round(u * 3.0))), "text": ""}
+		return {"reward": "recruits", "value": v, "hits": maxi(1, int(round(u * v))), "text": "+%d" % v}
+	var r: String = KIT[k] if k < KIT.size() else ("" if k % 2 == 1 else ("boots" if k % 4 == 0 else "rate"))
 	if r == "":
-		return {"reward": "none", "value": 0, "hits": hits, "text": ""}
+		return {"reward": "none", "value": 0, "hits": maxi(3, int(round(u * 3.0))), "text": ""}
+	var hits := int(round(10.0 * pow(1.5, k))) + 3 * k
 	if r == "boots":
 		return {"reward": "boots", "value": 1, "hits": hits, "text": "BOOTS"}
 	return {"reward": "rate", "value": 1, "hits": hits, "text": "RAPID"}
@@ -104,15 +122,16 @@ func _push_item() -> void:
 	var n := Node3D.new()
 	add_child(n)
 	var plain: bool = d.reward == "none"
+	var tall := LOW if plain else HEIGHT
 	# the wall: a slate block with a lighter cap; prize walls carry a glowing coloured face
 	var body := MeshInstance3D.new()
-	body.mesh = Meshes.box(WIDTH, HEIGHT, THICK)
-	body.position.y = HEIGHT * 0.5
+	body.mesh = Meshes.box(WIDTH, tall, THICK)
+	body.position.y = tall * 0.5
 	body.material_override = _wall_mat(Color(0.34, 0.37, 0.45) if plain else Color(0.2, 0.23, 0.3))
 	n.add_child(body)
 	var cap := MeshInstance3D.new()
 	cap.mesh = Meshes.box(WIDTH + 0.06, 0.08, THICK + 0.06)
-	cap.position.y = HEIGHT + 0.03
+	cap.position.y = tall + 0.03
 	cap.material_override = _wall_mat(Color(0.5, 0.53, 0.6))
 	n.add_child(cap)
 	if plain:
@@ -120,14 +139,14 @@ func _push_item() -> void:
 		for row in 2:
 			var seam := MeshInstance3D.new()
 			seam.mesh = Meshes.box(WIDTH + 0.01, 0.025, THICK + 0.01)
-			seam.position.y = HEIGHT * (0.33 + row * 0.33)
+			seam.position.y = tall * (0.33 + row * 0.33)
 			seam.material_override = _wall_mat(Color(0.24, 0.26, 0.32))
 			n.add_child(seam)
 	else:
 		var big := kind == "kit" or int(d.value) >= 10
 		var face := MeshInstance3D.new()
-		face.mesh = Meshes.box(WIDTH - 0.16, HEIGHT - 0.16, 0.04)
-		face.position = Vector3(0, HEIGHT * 0.5, THICK * 0.5 + 0.01)
+		face.mesh = Meshes.box(WIDTH - 0.16, tall - 0.16, 0.04)
+		face.position = Vector3(0, tall * 0.5, THICK * 0.5 + 0.01)
 		var m := StandardMaterial3D.new()
 		m.albedo_color = Color(0.95, 0.62, 0.08) if big else Color(0.12, 0.42, 0.95)
 		m.emission_enabled = true
@@ -138,11 +157,11 @@ func _push_item() -> void:
 		var lab := Label3D.new()
 		lab.font = _font
 		lab.text = d.text
-		lab.font_size = 72 if d.text.length() <= 3 else 44
+		lab.font_size = 60 if d.text.length() <= 3 else 34
 		lab.outline_size = 16
 		lab.pixel_size = 0.0098
-		lab.rotation_degrees.x = -28   # leans back a little, square to the camera
-		lab.position = Vector3(0, HEIGHT * 0.5, THICK * 0.5 + 0.05)
+		lab.rotation_degrees.x = 0.0
+		lab.position = Vector3(0, tall * 0.5, THICK * 0.5 + 0.035)
 		lab.render_priority = 1
 		n.add_child(lab)
 	d["node"] = n
