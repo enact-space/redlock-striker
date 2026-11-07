@@ -848,7 +848,15 @@ func _spawn_boss() -> void:
 ## Every kick lines up on the squad's own column: the balls fan in from the clones and fly straight
 ## up the bridge, so standing on the right hits only the right row, the left only the left row, and
 ## the middle only the keepers in front of you.
+## Damage per second the squad puts out, all kicks together.
+func _dps() -> float:
+	var b: Dictionary = BOOTS[tier]
+	return (crowd + heroes.size() * 3.0) * b.rate * rate_mul * b.dmg
+
+
 func _fire(delta: float) -> void:
+	for row in rows:
+		row.dps = _dps()
 	var b: Dictionary = BOOTS[tier]
 	var per_sec: float = (crowd + heroes.size() * 3.0) * 1.0 * b.rate * rate_mul   # the leader kicks three times as hard
 	var balls_per_sec := minf(per_sec, MAX_BALLS_PER_SEC)
@@ -1142,6 +1150,8 @@ func _burst(pos: Vector3, c: Color, n: int, chunk := 0.09) -> void:
 ## --auto (play by itself), --t=secs (start later in the run), --crowd=N, --tier=N,
 ## --shot=path.png --at=secs (screenshot then quit), --quit=secs (print a summary).
 var _auto := false
+var _sloppy := false           # --sloppy: the bot plays like a casual player (slow, rough aim)
+var _sloppy_t := 0.0
 var _trace := false            # --trace: print the bot's progress every 5 s
 var _shot_path := ""
 var _shot_at := -1.0
@@ -1156,6 +1166,8 @@ func _debug_args() -> void:
 			_auto = true
 		if a == "--trace":
 			_trace = true
+		if a == "--sloppy":
+			_sloppy = true
 		elif a.begins_with("--shot="):
 			_shot_path = a.get_slice("=", 1)
 		elif a.begins_with("--at="):
@@ -1187,7 +1199,9 @@ func _debug_args() -> void:
 
 func _debug_tick(delta: float) -> void:
 	_clock += delta
-	if _auto and state == "play":
+	_sloppy_t -= delta
+	if _auto and state == "play" and (not _sloppy or _sloppy_t <= 0.0):
+		_sloppy_t = 0.8
 		# like a player: deal with keepers once they're past the rows, otherwise work the rows in turn
 		var near := 0.0
 		var cnt := 0
@@ -1201,6 +1215,8 @@ func _debug_tick(delta: float) -> void:
 			target_x = near / cnt
 		else:
 			target_x = ROW_X if int(_clock / 6.0) % 2 == 0 else -ROW_X
+		if _sloppy:
+			target_x += randf_range(-0.6, 0.6)
 	if _auto and _trace and state == "play" and int(_clock * 60.0) % 300 == 0:
 		print("  t=%d units=%d tier=%d rate=%.2f rows=%s" % [t, _units(), tier, rate_mul, str(rows.map(func(r): return r.made))])
 	if _auto and state == "cleared" and _quit_at < 0.0:

@@ -12,9 +12,9 @@ signal claimed(item: Dictionary)
 # The recruits row, front to back: runs of cheap +1 walls with a little plain wall now and then,
 # the prizes growing further up. Each pair is [value, how many]; 0 = a little plain wall.
 const RECRUIT_PLAN := [
-	[1, 6], [0, 1], [1, 4], [0, 1], [2, 3], [0, 1], [1, 3], [2, 2], [0, 1], [3, 3], [0, 1],
-	[2, 2], [5, 2], [0, 1], [5, 2], [10, 1], [0, 1], [10, 2], [15, 1], [0, 1], [20, 1], [25, 1],
-	[0, 1], [30, 1], [50, 1], [0, 1], [75, 1], [99, 1],
+	[1, 8], [0, 1], [1, 6], [0, 1], [2, 4], [0, 1], [1, 4], [2, 3], [0, 1], [3, 4], [0, 1],
+	[2, 3], [5, 3], [0, 1], [5, 3], [10, 2], [0, 1], [10, 3], [15, 2], [0, 1], [20, 2], [25, 2],
+	[0, 1], [30, 2], [50, 2], [0, 1], [75, 1], [99, 1],
 ]
 # The kit row: an upgrade with a little plain wall between most of them. "" = a little plain wall.
 const KIT := ["rate", "", "boots", "", "rate", "rate", "", "boots", "", "rate", "", "rate", "boots", "", "rate", "", "boots", "", "rate", "rate", "", "boots"]
@@ -27,6 +27,10 @@ const THICK := 0.3
 
 static var RECRUITS: Array[int] = []
 
+## A wall's countdown is set when it reaches the front, from how hard the squad kicks right now,
+## so a wall always breaks in about the same time: a +1 in a third of a second, a little plain
+## wall in under a second, boots in a few seconds. The keepers are what make a level hard.
+var dps := 5.0
 var kind := "recruits"
 var side := 1.0
 var front := Vector3.ZERO   # foot of the front wall, centre of the lane
@@ -49,6 +53,7 @@ func setup(k: String, s: float, at: Vector3, font: Font) -> void:
 	_build()
 	for i in SLOTS:
 		_push_item()
+	_arm()
 	_layout(false)
 	_refresh()
 
@@ -94,27 +99,41 @@ func _build() -> void:
 	add_child(_num)
 
 
-## What one wall of the cheapest prize costs this far up the row, in hits.
-static func _unit_cost(k: int) -> float:
-	return 0.7 * pow(1.2, k) + 0.1 * k
+## Seconds of kicking each kind of wall takes.
+static func _secs(d: Dictionary) -> float:
+	match d.reward:
+		"recruits":
+			return 0.3 * sqrt(float(d.value))
+		"boots":
+			return 2.6
+		"rate":
+			return 1.6
+	return 0.7
+
+
+## The front wall's countdown: its kicking time at the squad's current power, never below a small floor.
+func _arm() -> void:
+	if items.is_empty():
+		return
+	var d := items[0]
+	d.hits = maxi(int(d.floor), int(round(dps * _secs(d))))
 
 
 func _next_reward() -> Dictionary:
 	var k := made
 	made += 1
-	var u := _unit_cost(k)
+	var fl := int(round(1.0 + 0.15 * k))
 	if kind == "recruits":
 		var v: int = RECRUITS[k] if k < RECRUITS.size() else (99 if k % 2 == 0 else 0)
 		if v == 0:
-			return {"reward": "none", "value": 0, "hits": maxi(3, int(round(u * 3.0))), "text": ""}
-		return {"reward": "recruits", "value": v, "hits": maxi(1, int(round(u * v))), "text": "+%d" % v}
+			return {"reward": "none", "value": 0, "floor": fl * 2, "hits": 0, "text": ""}
+		return {"reward": "recruits", "value": v, "floor": fl, "hits": 0, "text": "+%d" % v}
 	var r: String = KIT[k] if k < KIT.size() else ("" if k % 2 == 1 else ("boots" if k % 4 == 0 else "rate"))
 	if r == "":
-		return {"reward": "none", "value": 0, "hits": maxi(3, int(round(u * 3.0))), "text": ""}
-	var hits := int(round(10.0 * pow(1.5, k))) + 3 * k
+		return {"reward": "none", "value": 0, "floor": fl * 2, "hits": 0, "text": ""}
 	if r == "boots":
-		return {"reward": "boots", "value": 1, "hits": hits, "text": "BOOTS"}
-	return {"reward": "rate", "value": 1, "hits": hits, "text": "RAPID"}
+		return {"reward": "boots", "value": 1, "floor": fl * 4, "hits": 0, "text": "BOOTS"}
+	return {"reward": "rate", "value": 1, "floor": fl * 3, "hits": 0, "text": "RAPID"}
 
 
 func _push_item() -> void:
@@ -219,6 +238,7 @@ func hit(dmg: int) -> Dictionary:
 	items.pop_front()
 	(it.node as Node3D).queue_free()
 	_push_item()
+	_arm()
 	(items[items.size() - 1].node as Node3D).position = _slot(SLOTS) + Vector3(0, 0, -0.6)
 	_layout(true)
 	_refresh()
