@@ -5,7 +5,8 @@ extends Node3D
 ## the middle lane from the far end; touching the squad costs clones. Two straight rows of reward
 ## tiles line the edges behind stone gates: kick a gate's number down to zero for its first tile.
 ## The right row gives clones (+1 ... +99), the left row gives boot upgrades.
-## Every so often a giant holo keeper walks down with a big health number.
+## Levels: each level is a fresh run that ends with a giant holo keeper with a big health number.
+## Beat it to clear the level and unlock the next one, which is tougher. Progress is saved.
 ## Every squad member is a clone of the girl you pick: the leader is the full animated model, the
 ## rest are baked low-poly kick poses drawn as MultiMeshes (a six-frame flipbook) so the squad can
 ## reach hundreds.
@@ -21,7 +22,8 @@ const LEADER_H := 1.3
 const POSES := 8             # clone frames: 0 = standing, 1..7 = the kick
 const POSE_FPS := 16.0
 const KICK_EVERY := 0.9
-const WAVE_EVERY := 18.0     # a rush of keepers this often      # each clone kicks once per this many seconds
+const WAVE_EVERY := 18.0     # a rush of keepers this often
+const SAVE_PATH := "user://striker_save.json"      # each clone kicks once per this many seconds
 const BALL_SPEED := 26.0
 const MAX_BALLS := 900
 const MAX_BALLS_PER_SEC := 140.0
@@ -53,6 +55,11 @@ var boss: HoloKeeper
 var boss_label: Label3D
 var next_boss := 55.0
 var bosses_beaten := 0
+var level := 1
+var unlocked := 1
+var boss_hp := 0
+var hud_level: Label
+var hud_bar: ProgressBar
 var spawn_acc := 0.0
 var next_wave := 20.0
 var wave_left := 0
@@ -106,6 +113,7 @@ func _ready() -> void:
 			clone_poses[who] = poses
 	if ResourceLoader.exists("res://assets/characters/football_clips.res"):
 		clips = load("res://assets/characters/football_clips.res")
+	_load_save()
 	_build_world()
 	_build_ui()
 	_show_title()
@@ -446,6 +454,30 @@ func _build_ui() -> void:
 	top.add_child(hud_kit)
 	hud_score = _label("", 26, Color(0.85, 0.92, 1.0))
 	top.add_child(hud_score)
+	# level name and a bar that fills until the level's giant keeper arrives
+	var mid := VBoxContainer.new()
+	mid.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	mid.offset_left = -110
+	mid.offset_right = 110
+	mid.offset_top = 52
+	mid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(mid)
+	hud_level = _label("", 30, Color(1, 1, 1))
+	hud_level.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mid.add_child(hud_level)
+	hud_bar = ProgressBar.new()
+	hud_bar.show_percentage = false
+	hud_bar.custom_minimum_size = Vector2(220, 14)
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.1, 0.14, 0.25, 0.6)
+	bg.set_corner_radius_all(7)
+	var fg := StyleBoxFlat.new()
+	fg.bg_color = Color(1.0, 0.3, 0.45)
+	fg.set_corner_radius_all(7)
+	hud_bar.add_theme_stylebox_override("background", bg)
+	hud_bar.add_theme_stylebox_override("fill", fg)
+	hud_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mid.add_child(hud_bar)
 	banner = _label("", 40, Color(1.0, 0.85, 0.5))
 	banner.set_anchors_preset(Control.PRESET_CENTER)
 	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -495,7 +527,33 @@ func _overlay_box(title: String, sub: String) -> VBoxContainer:
 func _show_title() -> void:
 	state = "title"
 	_reset()
-	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane: your kicks fly straight ahead. Right row: more clones. Left row: better boots. Grey tiles hold nothing. Middle: stop the holo keepers.\n\nWho do you play? Every new squad member is her clone.")
+	var v := _overlay_box("REDLOCK\nSTRIKER", "Working title. Drag to pick your lane: your kicks fly straight ahead. Right row: more clones. Left row: better boots. Grey tiles hold nothing. Middle: stop the holo keepers. Beat the giant keeper at the end of each level to unlock the next.\n\nWho do you play? Every new squad member is her clone.")
+	# level picker: any level you've unlocked
+	var pick := HBoxContainer.new()
+	pick.alignment = BoxContainer.ALIGNMENT_CENTER
+	pick.add_theme_constant_override("separation", 14)
+	v.add_child(pick)
+	var lv := _label("", 34, Color(1, 0.85, 0.5))
+	lv.custom_minimum_size = Vector2(170, 0)
+	lv.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var prev := _button("<", Color(0.85, 0.88, 0.95))
+	prev.custom_minimum_size = Vector2(64, 64)
+	var next := _button(">", Color(0.85, 0.88, 0.95))
+	next.custom_minimum_size = Vector2(64, 64)
+	var show := func():
+		lv.text = "LEVEL %d" % level
+		prev.disabled = level <= 1
+		next.disabled = level >= unlocked
+	prev.pressed.connect(func():
+		level = maxi(1, level - 1)
+		show.call())
+	next.pressed.connect(func():
+		level = mini(unlocked, level + 1)
+		show.call())
+	pick.add_child(prev)
+	pick.add_child(lv)
+	pick.add_child(next)
+	show.call()
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 14)
@@ -506,6 +564,66 @@ func _show_title() -> void:
 	var bk := _button("Kasumi", Color(0.55, 0.95, 0.85))
 	bk.pressed.connect(func(): _start("kasumi"))
 	row.add_child(bk)
+
+
+# ---------------------------------------------------------------- levels
+
+## How tough level L is compared with level 1 (keeper health and numbers).
+func _tough() -> float:
+	return 1.0 + 0.16 * (level - 1)
+
+
+## Seconds until the level's giant keeper walks out: later levels give a little longer to grow.
+func _boss_time() -> float:
+	return 55.0 + 6.0 * minf(level - 1, 10)
+
+
+## Clones you start a level with: one more for every two levels behind you, so later levels open with
+## a squad ready for their tougher keepers.
+func _head_start() -> int:
+	return mini(10, (level - 1) / 2)
+
+
+func _load_save() -> void:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return
+	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	var d = JSON.parse_string(f.get_as_text())
+	if d is Dictionary:
+		unlocked = maxi(1, int(d.get("unlocked", 1)))
+		level = clampi(int(d.get("level", unlocked)), 1, unlocked)
+		hero_pick = str(d.get("pick", hero_pick))
+
+
+func _save() -> void:
+	if _auto:
+		return   # bot runs never touch the player's progress
+	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify({"unlocked": unlocked, "level": level, "pick": hero_pick}))
+
+
+func _level_cleared() -> void:
+	state = "cleared"
+	# the rest of the keepers burst
+	for p in k_pos:
+		_burst(p, KEEPER_TINT, 6)
+	k_pos.clear()
+	k_hp.clear()
+	k_big.clear()
+	k_flash.clear()
+	k_mm.visible_instance_count = 0
+	unlocked = maxi(unlocked, level + 1)
+	_save()
+	var v := _overlay_box("LEVEL %d\nCLEARED!" % level, "%d clones, %d holo keepers kicked out." % [_units(), kills])
+	var b := _button("Next: level %d" % (level + 1), Color(1.0, 0.66, 0.72))
+	b.pressed.connect(func():
+		level += 1
+		_start(hero_pick))
+	v.add_child(b)
+	var m := _button("Menu", Color(0.85, 0.88, 0.95))
+	m.pressed.connect(_show_title)
+	v.add_child(m)
 
 
 # ---------------------------------------------------------------- run
@@ -521,7 +639,7 @@ func _reset() -> void:
 	target_x = 0.0
 	t = 0.0
 	kills = 0
-	next_boss = 55.0
+	next_boss = _boss_time()
 	next_wave = 20.0
 	wave_left = 0
 	spawn_acc = 0.0
@@ -545,15 +663,17 @@ func _reset() -> void:
 func _start(pick: String) -> void:
 	hero_pick = pick
 	_reset()
+	_save()
 	if clone_poses.has(pick):
 		for f in POSES:
 			c_mms[f].mesh = clone_poses[pick][f]
 	_add_hero(pick)
+	crowd = _head_start()
 	for c in overlay.get_children():
 		c.queue_free()
 	overlay.visible = false
 	state = "play"
-	_say("Hold the bridge!", 1.4)
+	_say("LEVEL %d" % level, 1.4)
 
 
 func _add_hero(look: String) -> void:
@@ -606,6 +726,13 @@ func _process(delta: float) -> void:
 		banner.visible = _banner_t > 0.0
 	hud_kit.text = BOOTS[tier].name.to_upper()
 	hud_score.text = "%d KO" % kills
+	hud_level.text = "LEVEL %d" % level
+	hud_level.visible = state != "title"
+	hud_bar.visible = state == "play"
+	if boss:
+		hud_bar.value = 100.0 * float(boss.hp) / maxf(1.0, float(boss_hp))
+	else:
+		hud_bar.value = 100.0 * clampf(t / maxf(1.0, next_boss), 0.0, 1.0)
 	if state != "play":
 		_draw_crowd(delta)
 		return
@@ -632,7 +759,7 @@ func _process(delta: float) -> void:
 
 func _spawn_keepers(delta: float) -> void:
 	# a steady trickle plus a rush every WAVE_EVERY seconds, both thickening over time
-	var rate := minf(0.3 + t * 0.025, 9.0)
+	var rate := minf((0.3 + t * 0.025) * (1.0 + 0.05 * (level - 1)), 9.0)
 	spawn_acc += rate * delta
 	if t >= next_wave:
 		next_wave = t + WAVE_EVERY
@@ -641,7 +768,7 @@ func _spawn_keepers(delta: float) -> void:
 		var n := mini(wave_left, int(ceil(14.0 * delta * 6.0)))
 		wave_left -= n
 		spawn_acc += n
-	var hp := 1.0 + t / 40.0 + pow(t / 70.0, 3.3) * 3.0
+	var hp := (1.0 + t / 40.0 + pow(t / 70.0, 3.3) * 3.0) * _tough()
 	while spawn_acc >= 1.0 and k_pos.size() < MAX_KEEPERS:
 		spawn_acc -= 1.0
 		var big := t > 25.0 and randf() < 0.1
@@ -656,13 +783,14 @@ func _spawn_keepers(delta: float) -> void:
 func _spawn_boss() -> void:
 	boss = HoloKeeper.new()
 	add_child(boss)
-	var hp := 500.0 * pow(3.5, bosses_beaten)
+	var hp := 350.0 * pow(1.45, level - 1)
 	boss.setup("boss", hp / 120.0)
+	boss_hp = boss.max_hp
 	boss.position = Vector3(0, 0, GATE_Z)
-	boss_label = _label3d(90, Color(1, 0.45, 0.5))
+	boss_label = _label3d(150, Color(1, 0.9, 0.3))
 	add_child(boss_label)
 	shake = 0.4
-	_say("GIANT HOLO KEEPER", 1.8)
+	_say("LEVEL BOSS!", 1.8)
 
 
 ## Every kick lines up on the squad's own column: the balls fan in from the clones and fly straight
@@ -822,9 +950,10 @@ func _boss_down() -> void:
 	boss_label.queue_free()
 	boss_label = null
 	bosses_beaten += 1
-	next_boss = t + 45.0
+	next_boss = INF
 	shake = 0.5
-	_say("GIANT KEEPER DOWN!", 1.8)
+	state = "cleared"
+	call_deferred("_level_cleared")   # not mid-way through the ball loop
 
 
 func _lose(n: int) -> void:
@@ -912,7 +1041,7 @@ func _clone_pos(i: int) -> Vector3:
 
 func _game_over() -> void:
 	state = "over"
-	var v := _overlay_box("SQUAD DOWN", "%d holo keepers kicked out, %d giant keepers beaten." % [kills, bosses_beaten])
+	var v := _overlay_box("SQUAD DOWN", "Level %d. %d holo keepers kicked out." % [level, kills])
 	var b := _button("Try again", Color(1.0, 0.66, 0.72))
 	b.pressed.connect(func(): _start(hero_pick))
 	v.add_child(b)
@@ -970,6 +1099,10 @@ func _debug_args() -> void:
 			_quit_at = float(a.get_slice("=", 1))
 	if not _auto:
 		return
+	for a in args:
+		if a.begins_with("--level="):
+			level = int(a.get_slice("=", 1))
+			unlocked = maxi(unlocked, level)
 	_start("hiyori")
 	for a in args:
 		if a.begins_with("--t="):
@@ -980,6 +1113,8 @@ func _debug_args() -> void:
 			cam.position = Vector3(1.2, 2.2, SQUAD_Z + 3.2)
 			cam.look_at(Vector3(0, 0.6, SQUAD_Z - 0.8))
 			_auto = false
+		elif a == "--cleared":
+			call_deferred("_level_cleared")
 		elif a.begins_with("--tier="):
 			tier = int(a.get_slice("=", 1))
 			_restyle_crowd()
@@ -1001,7 +1136,11 @@ func _debug_tick(delta: float) -> void:
 			target_x = near / cnt
 		else:
 			target_x = ROW_X if int(_clock / 6.0) % 2 == 0 else -ROW_X
+	if _auto and state == "cleared" and _quit_at < 0.0:
+		print("CLEAR level=%d t=%d units=%d tier=%d kills=%d" % [level, t, _units(), tier, kills])
+		get_tree().quit()
 	if _auto and state == "over" and _quit_at < 0.0:
+		print("OVER level=%d t=%d units=%d tier=%d kills=%d boss_hp=%d" % [level, t, _units(), tier, kills, boss.hp if boss else -1])
 		get_tree().quit()
 	if _shot_path != "" and _shot_at >= 0.0 and _clock >= _shot_at:
 		get_viewport().get_texture().get_image().save_png(_shot_path)

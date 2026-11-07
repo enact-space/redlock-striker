@@ -6,7 +6,7 @@ extends Node3D
 
 const SHADER := """
 shader_type spatial;
-render_mode unshaded, blend_add, depth_draw_never, cull_back, shadows_disabled;
+render_mode unshaded, blend_mix, depth_draw_always, cull_back, shadows_disabled;
 uniform vec4 tint : source_color = vec4(0.42, 0.9, 1.0, 1.0);
 uniform float strength = 1.0;
 void fragment() {
@@ -14,16 +14,17 @@ void fragment() {
 	vec3 world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float scan = 0.6 + 0.4 * step(0.45, fract(world.y * 14.0 - TIME * 1.6));
 	float flick = 0.9 + 0.1 * sin(TIME * 23.0 + world.x * 3.0);
-	float k = (0.3 + rim * 1.3) * scan * flick * strength;
-	ALBEDO = tint.rgb * k;
-	ALPHA = clamp(k, 0.0, 1.0);
+	// solid and bright so it reads on the daylight bridge
+	vec3 c = mix(tint.rgb, vec3(1.0), clamp(rim * 0.8, 0.0, 0.8)) * (0.85 + 0.15 * scan) * flick;
+	ALBEDO = c * strength;
+	ALPHA = 0.92;
 }
 """
 
 const KINDS := {
 	"grunt": {"hp": 1, "scale": 1.15, "speed": 3.2, "tint": Color(0.42, 0.9, 1.0), "coins": 1},
 	"brute": {"hp": 4, "scale": 1.35, "speed": 2.6, "tint": Color(1.0, 0.45, 0.3), "coins": 3},
-	"boss": {"hp": 120, "scale": 3.2, "speed": 1.1, "tint": Color(1.0, 0.35, 0.85), "coins": 40},
+	"boss": {"hp": 120, "scale": 3.2, "speed": 1.1, "tint": Color(0.85, 0.1, 0.35), "coins": 40},
 }
 
 static var _shader: Shader

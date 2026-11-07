@@ -8,7 +8,13 @@ nonstop; drag left and right to pick a lane. Holographic keepers pour down the m
 end and cost you clones when they reach the squad. Two straight rows of reward tiles line the edges behind stone
 gates: kick a gate's number down to zero and its first tile flies to the squad while the row slides forward. The
 right row gives clones (+1 ... +99), the left row gives boot upgrades (more damage, faster kicks, a new disc colour
-under the squad). A giant holo keeper with a big health number walks down every so often.
+under the squad).
+
+Levels: each level is a fresh run. A bar under the level name fills until the level's giant holo keeper walks
+out; beat it to clear the level and unlock the next. Later levels have tougher, more numerous keepers and a bigger
+boss, and you start them with one extra clone per two levels behind you (up to 10). The title screen lets you pick any
+unlocked level; progress is saved in `user://striker_save.json`. A near-perfect bot (`--auto --level=N`) clears
+levels 1-15 and fails around 20.
 
 ## Code
 
@@ -36,7 +42,7 @@ Kasumi): `tools/models/extract_clips.gd` copies them, without root travel, into 
 ## Debug flags
 
 `godot -- --auto` plays itself (handles close keepers, otherwise works the reward rows). Also `--t=secs`, `--crowd=N`,
-`--tier=N`, `--closeup` (camera next to the squad), `--shot=path.png --at=secs` (screenshot), `--quit=secs`
+`--level=N`, `--cleared` (show the cleared screen), `--tier=N`, `--closeup` (camera next to the squad), `--shot=path.png --at=secs` (screenshot), `--quit=secs`
 (prints a one-line summary).
 
 ## Web demo
